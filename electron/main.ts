@@ -4,7 +4,12 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { Chat } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { LlmAgent, InMemoryRunner, isFinalResponse, stringifyContent } from "@google/adk";
+import {
+  LlmAgent,
+  InMemoryRunner,
+  isFinalResponse,
+  stringifyContent,
+} from "@google/adk";
 import { LocalAdapter } from "./local-adapter";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -93,7 +98,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.mjs"),
     },
   });
-
+  win.setContentProtection(true);
   // Forward bot messages to the renderer
   localAdapter.events.on("bot-message", (data) => {
     win?.webContents.send("chat:bot-message", data);
@@ -118,10 +123,8 @@ function createWindow() {
     return pinned;
   });
 
-  if (VITE_DEV_SERVER_URL)
-    win.loadURL(VITE_DEV_SERVER_URL);
-  else
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
+  if (VITE_DEV_SERVER_URL) win.loadURL(VITE_DEV_SERVER_URL);
+  else win.loadFile(path.join(RENDERER_DIST, "index.html"));
 }
 
 app.on("window-all-closed", () => {
@@ -132,8 +135,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0)
-    createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
 app.whenReady().then(async () => {
