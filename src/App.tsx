@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
 import { Pin, PinOff, Plus, X, ArrowRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface ChatMessage {
   id: string;
@@ -50,7 +59,7 @@ function TabBar({ tabs, activeId, pinned, onSelect, onClose, onNew, onTogglePin 
 }) {
   return (
     <div
-      className="flex items-end h-10 bg-bg pl-[78px] pr-1.5 gap-px shrink-0 select-none"
+      className="flex items-end h-10 bg-background pl-[78px] pr-1.5 gap-px shrink-0 select-none"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       {tabs.map((tab) => (
@@ -59,8 +68,8 @@ function TabBar({ tabs, activeId, pinned, onSelect, onClose, onNew, onTogglePin 
           onClick={() => onSelect(tab.id)}
           className={`group relative flex items-center gap-1.5 h-8 px-3 text-xs rounded-t-lg transition-colors cursor-default ${
             tab.id === activeId
-              ? "bg-surface text-text"
-              : "text-muted hover:text-subtle hover:bg-white/[0.03]"
+              ? "bg-card text-foreground"
+              : "text-muted-foreground hover:text-foreground/70 hover:bg-white/[0.03]"
           }`}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
@@ -68,33 +77,45 @@ function TabBar({ tabs, activeId, pinned, onSelect, onClose, onNew, onTogglePin 
           {tabs.length > 1 && (
             <span
               onClick={(e) => { e.stopPropagation(); onClose(tab.id); }}
-              className="ml-1 opacity-0 group-hover:opacity-100 hover:text-text transition-opacity"
+              className="ml-0.5 opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity"
             >
               <X size={10} />
             </span>
           )}
         </button>
       ))}
-      <button
-        onClick={onNew}
-        className="flex items-center justify-center w-7 h-8 text-muted hover:text-subtle transition-colors cursor-default rounded-t-lg hover:bg-white/[0.03]"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      >
-        <Plus size={14} />
-      </button>
+
+      <Tooltip>
+        <TooltipTrigger render={<div />}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={onNew}
+            className="mb-1 text-muted-foreground cursor-default"
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <Plus size={14} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">New chat</TooltipContent>
+      </Tooltip>
 
       <div className="flex-1" />
 
-      <button
-        onClick={onTogglePin}
-        className={`flex items-center justify-center w-7 h-7 mb-0.5 rounded-md transition-colors cursor-default ${
-          pinned ? "text-accent" : "text-muted hover:text-subtle"
-        }`}
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        title={pinned ? "Unpin window" : "Pin on top"}
-      >
-        {pinned ? <Pin size={13} /> : <PinOff size={13} />}
-      </button>
+      <Tooltip>
+        <TooltipTrigger render={<div />}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={onTogglePin}
+            className={`mb-1 cursor-default ${pinned ? "text-primary" : "text-muted-foreground"}`}
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            {pinned ? <Pin size={13} /> : <PinOff size={13} />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{pinned ? "Unpin window" : "Pin on top"}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
@@ -105,7 +126,7 @@ function TypingIndicator() {
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className="w-1.5 h-1.5 rounded-full bg-muted animate-bounce-dot"
+          className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce-dot"
           style={{ animationDelay: `${i * 0.16}s` }}
         />
       ))}
@@ -119,17 +140,17 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   return (
     <div className={`flex gap-2 max-w-[85%] animate-fade-in ${isUser ? "self-end flex-row-reverse" : "self-start"}`}>
       <div
-        className={`px-3 py-2 text-[13px] leading-relaxed ${
+        className={`px-3 py-2 text-[13px] leading-relaxed rounded-2xl ${
           isUser
-            ? "bg-accent text-white rounded-2xl rounded-br-sm"
-            : "bg-surface border border-border text-text rounded-2xl rounded-bl-sm"
+            ? "bg-primary text-primary-foreground rounded-br-sm"
+            : "bg-card border border-border text-foreground rounded-bl-sm"
         }`}
       >
         <div
           className="break-words [&_strong]:font-semibold"
           dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }}
         />
-        <time className={`block text-[10px] mt-1 ${isUser ? "text-right text-white/40" : "text-muted"}`}>
+        <time className={`block text-[10px] mt-1 ${isUser ? "text-right text-primary-foreground/40" : "text-muted-foreground"}`}>
           {formatTime(msg.timestamp)}
         </time>
       </div>
@@ -185,13 +206,18 @@ function App() {
     const text = input.trim();
     if (!text) return;
 
-    const msg: ChatMessage = { id: `local_${Date.now()}`, text, author: "user", timestamp: Date.now() };
-    setMessagesByTab((prev) => ({ ...prev, [activeTab]: [...(prev[activeTab] ?? []), msg] }));
+    setMessagesByTab((prev) => ({ ...prev, [activeTab]: [...(prev[activeTab] ?? []), { id: `local_${Date.now()}`, text, author: "user", timestamp: Date.now() }] }));
     setInput("");
     setIsTyping(true);
     window.chatBridge.sendMessage(text);
     inputRef.current?.focus();
   }, [input, activeTab]);
+
+  const handleTogglePin = useCallback(async () => {
+    const next = !pinned;
+    await window.chatBridge.setPinned(next);
+    setPinned(next);
+  }, [pinned]);
 
   const handleNewTab = useCallback(() => {
     tabCounter++;
@@ -200,12 +226,6 @@ function App() {
     setMessagesByTab((prev) => ({ ...prev, [id]: [] }));
     setActiveTab(id);
   }, []);
-
-  const handleTogglePin = useCallback(async () => {
-    const next = !pinned;
-    await window.chatBridge.setPinned(next);
-    setPinned(next);
-  }, [pinned]);
 
   const handleCloseTab = useCallback((id: string) => {
     setTabs((prev) => {
@@ -223,63 +243,65 @@ function App() {
   }, [activeTab]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-surface text-text overflow-hidden">
-      <TabBar
-        tabs={tabs}
-        activeId={activeTab}
-        pinned={pinned}
-        onSelect={setActiveTab}
-        onClose={handleCloseTab}
-        onNew={handleNewTab}
-        onTogglePin={handleTogglePin}
-      />
-
-      {/* Messages */}
-      <main className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center flex-1 gap-1 opacity-40">
-            <p className="text-sm text-subtle">New conversation</p>
-          </div>
-        )}
-
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} />
-        ))}
-
-        {isTyping && (
-          <div className="self-start animate-fade-in">
-            <div className="bg-surface border border-border rounded-2xl rounded-bl-sm">
-              <TypingIndicator />
-            </div>
-          </div>
-        )}
-
-        <div ref={bottomRef} />
-      </main>
-
-      {/* Input */}
-      <footer className="flex items-center gap-2 px-3 py-2.5 border-t border-border shrink-0">
-        <input
-          ref={inputRef}
-          type="text"
-          placeholder="Message..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) handleSend();
-          }}
-          autoFocus
-          className="flex-1 bg-surface-hover border border-border rounded-lg px-3 py-2 text-[13px] text-text placeholder-muted outline-none transition-colors focus:border-accent"
+    <TooltipProvider>
+      <div className="flex flex-col h-screen w-screen bg-card text-foreground overflow-hidden">
+        <TabBar
+          tabs={tabs}
+          activeId={activeTab}
+          pinned={pinned}
+          onSelect={setActiveTab}
+          onClose={handleCloseTab}
+          onNew={handleNewTab}
+          onTogglePin={handleTogglePin}
         />
-        <button
-          onClick={handleSend}
-          disabled={!input.trim()}
-          className="size-8 rounded-lg bg-accent text-white flex items-center justify-center shrink-0 transition-all hover:bg-accent-hover disabled:opacity-30 disabled:cursor-default cursor-pointer"
-        >
-          <ArrowRight size={16} strokeWidth={2.5} />
-        </button>
-      </footer>
-    </div>
+
+        <ScrollArea className="flex-1">
+          <div className="flex flex-col gap-2 px-4 py-3 min-h-full">
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center flex-1 min-h-[200px] gap-1 opacity-40">
+                <p className="text-sm text-muted-foreground">New conversation</p>
+              </div>
+            )}
+
+            {messages.map((msg) => (
+              <MessageBubble key={msg.id} msg={msg} />
+            ))}
+
+            {isTyping && (
+              <div className="self-start animate-fade-in">
+                <div className="bg-card border border-border rounded-2xl rounded-bl-sm">
+                  <TypingIndicator />
+                </div>
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+        </ScrollArea>
+
+        <footer className="flex items-center gap-2 px-3 py-2.5 border-t border-border shrink-0">
+          <Input
+            ref={inputRef}
+            placeholder="Message..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) handleSend();
+            }}
+            autoFocus
+            className="flex-1 bg-secondary text-[13px]"
+          />
+          <Button
+            size="icon"
+            onClick={handleSend}
+            disabled={!input.trim()}
+            className="cursor-default"
+          >
+            <ArrowRight size={16} strokeWidth={2.5} />
+          </Button>
+        </footer>
+      </div>
+    </TooltipProvider>
   );
 }
 
