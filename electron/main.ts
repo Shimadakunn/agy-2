@@ -1,13 +1,17 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import dotenv from "dotenv";
 import { Chat } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
+import { LlmAgent, InMemoryRunner, isFinalResponse, stringifyContent } from "@google/adk";
 import { LocalAdapter } from "./local-adapter";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 process.env.APP_ROOT = path.join(__dirname, "..");
+
+dotenv.config({ path: path.join(process.env.APP_ROOT, ".env") });
 
 export const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
 export const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
@@ -28,32 +32,52 @@ const bot = new Chat({
   logger: "debug",
 });
 
+const agent = new LlmAgent({
+  name: "agy",
+  model: "gemini-2.5-flash",
+  instruction: `You are Agy, a helpful and friendly assistant. Be concise and clear in your responses. Use markdown formatting when appropriate.`,
+});
+
+const runner = new InMemoryRunner({ agent, appName: "agy" });
+
+const sessionIds = new Map<string, string>();
+
+async function askAgent(userId: string, text: string): Promise<string> {
+  let sessionId = sessionIds.get(userId);
+  if (!sessionId) {
+    const session = await runner.sessionService.createSession({
+      appName: "agy",
+      userId,
+    });
+    sessionId = session.id;
+    sessionIds.set(userId, sessionId);
+  }
+
+  const parts: string[] = [];
+  for await (const event of runner.runAsync({
+    userId,
+    sessionId,
+    newMessage: { role: "user", parts: [{ text }] },
+  })) {
+    if (isFinalResponse(event)) {
+      const content = stringifyContent(event);
+      if (content) parts.push(content);
+    }
+  }
+
+  return parts.join("") || "Sorry, I couldn't generate a response.";
+}
+
 bot.onNewMention(async (thread, message) => {
   await thread.subscribe();
-  await thread.post(`You said: "${message.text}"\n\nI'm **Agy**, your local chat bot powered by Chat SDK. Try sending me another message!`);
+  const response = await askAgent("default", message.text);
+  await thread.post(response);
 });
 
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.author.isBot) return;
-
-  const text = message.text.toLowerCase();
-
-  if (text === "help") {
-    await thread.post("Available commands:\n- **help** — show this message\n- **time** — current time\n- **ping** — pong!\n- Or just chat with me!");
-    return;
-  }
-
-  if (text === "ping") {
-    await thread.post("Pong!");
-    return;
-  }
-
-  if (text === "time") {
-    await thread.post(`Current time: **${new Date().toLocaleTimeString()}**`);
-    return;
-  }
-
-  await thread.post(`Echo: "${message.text}"`);
+  const response = await askAgent("default", message.text);
+  await thread.post(response);
 });
 
 function createWindow() {
