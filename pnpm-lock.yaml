@@ -20,6 +20,9 @@ importers:
       '@google/adk':
         specifier: ^0.5.0
         version: 0.5.0(4194f44103d4fb1b5dbbc00f52e10c4c)
+      '@google/genai':
+        specifier: ^1.45.0
+        version: 1.45.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))
       chat:
         specifier: ^4.20.0
         version: 4.20.0
@@ -661,8 +664,8 @@ packages:
       '@opentelemetry/sdk-trace-base': ^2.1.0
       '@opentelemetry/sdk-trace-node': ^2.1.0
 
-  '@google/genai@1.44.0':
-    resolution: {integrity: sha512-kRt9ZtuXmz+tLlcNntN/VV4LRdpl6ZOu5B1KbfNgfR65db15O6sUQcwnwLka8sT/V6qysD93fWrgJHF2L7dA9A==}
+  '@google/genai@1.45.0':
+    resolution: {integrity: sha512-+sNRWhKiRibVgc4OKi7aBJJ0A7RcoVD8tGG+eFkqxAWRjASDW+ktS9lLwTDnAxZICzCVoeAdu8dYLJVTX60N9w==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@modelcontextprotocol/sdk': ^1.25.2
@@ -5312,7 +5315,7 @@ snapshots:
       '@google-cloud/opentelemetry-cloud-monitoring-exporter': 0.21.0(@opentelemetry/api@1.9.0)(@opentelemetry/core@2.6.0(@opentelemetry/api@1.9.0))(@opentelemetry/resources@2.6.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.0(@opentelemetry/api@1.9.0))(encoding@0.1.13)
       '@google-cloud/opentelemetry-cloud-trace-exporter': 3.0.0(@opentelemetry/api@1.9.0)(@opentelemetry/core@2.6.0(@opentelemetry/api@1.9.0))(@opentelemetry/resources@2.6.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@2.6.0(@opentelemetry/api@1.9.0))(encoding@0.1.13)
       '@google-cloud/storage': 7.19.0(encoding@0.1.13)
-      '@google/genai': 1.44.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))
+      '@google/genai': 1.45.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))
       '@mikro-orm/core': 6.6.9
       '@mikro-orm/mariadb': 6.6.9(@mikro-orm/core@6.6.9)(pg@8.19.0)
       '@mikro-orm/mssql': 6.6.9(@azure/core-client@1.10.1)(@mikro-orm/core@6.6.9)(mariadb@3.4.5)(pg@8.19.0)
@@ -5346,7 +5349,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@google/genai@1.44.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))':
+  '@google/genai@1.45.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))':
     dependencies:
       google-auth-library: 10.6.1
       p-retry: 4.6.2

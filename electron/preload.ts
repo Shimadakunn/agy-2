@@ -45,4 +45,7 @@ contextBridge.exposeInMainWorld("chatBridge", {
     ipcRenderer.on("auth:changed", handler);
     return () => ipcRenderer.off("auth:changed", handler);
   },
+  requestMicPermission: (): Promise<boolean> => ipcRenderer.invoke("voice:request-mic-permission"),
+  transcribeAudio: (audioBase64: string, mimeType: string): Promise<{ text?: string; error?: string }> =>
+    ipcRenderer.invoke("voice:transcribe", audioBase64, mimeType),
 });
