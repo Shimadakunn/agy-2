@@ -37,4 +37,12 @@ contextBridge.exposeInMainWorld("chatBridge", {
     ipcRenderer.on("chat:bot-typing", handler);
     return () => ipcRenderer.off("chat:bot-typing", handler);
   },
+  getAuthStatus: (): Promise<boolean> => ipcRenderer.invoke("auth:status"),
+  connect: (): Promise<boolean> => ipcRenderer.invoke("auth:connect"),
+  disconnect: (): Promise<void> => ipcRenderer.invoke("auth:disconnect"),
+  onAuthChanged: (callback: (connected: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, connected: boolean) => callback(connected);
+    ipcRenderer.on("auth:changed", handler);
+    return () => ipcRenderer.off("auth:changed", handler);
+  },
 });

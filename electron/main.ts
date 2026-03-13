@@ -13,6 +13,7 @@ import {
 import { LocalAdapter } from "./local-adapter";
 import { gwsTools } from "./tools/gws";
 import { browserTools } from "./tools/browser";
+import { loadStoredToken, startOAuthFlow, disconnect, isConnected } from "./auth";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,7 +49,7 @@ const agent = new LlmAgent({
 - Be concise and clear. Use markdown formatting.
 - For email drafts: create the draft via the API tool, then open Gmail drafts in the user's browser so they can review and send manually. Never send emails directly.
 - For calendar events: create them and open the event link in the browser.
-- When a tool returns an error about authentication, tell the user they need to run "gws auth login" in their terminal first.
+- When a tool returns an error about authentication, tell the user to click the Connect button in the top right corner to sign in with Google.
 
 ## Draft-then-Preview Pattern
 When the user asks to write/draft/compose an email:
@@ -138,6 +139,18 @@ function createWindow() {
     return pinned;
   });
 
+  // Google OAuth
+  ipcMain.handle("auth:status", () => isConnected());
+  ipcMain.handle("auth:connect", async () => {
+    const success = await startOAuthFlow();
+    if (success) win?.webContents.send("auth:changed", true);
+    return success;
+  });
+  ipcMain.handle("auth:disconnect", () => {
+    disconnect();
+    win?.webContents.send("auth:changed", false);
+  });
+
   if (VITE_DEV_SERVER_URL) win.loadURL(VITE_DEV_SERVER_URL);
   else win.loadFile(path.join(RENDERER_DIST, "index.html"));
 }
@@ -154,6 +167,7 @@ app.on("activate", () => {
 });
 
 app.whenReady().then(async () => {
+  await loadStoredToken();
   await bot.initialize();
   createWindow();
 });

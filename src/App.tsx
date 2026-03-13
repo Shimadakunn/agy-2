@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
-import { Pin, PinOff, Plus, X, ArrowRight } from "lucide-react";
+import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -31,6 +31,10 @@ declare global {
       onBotMessage: (cb: (data: { id: string; text: string; timestamp: number }) => void) => () => void;
       onBotEdit: (cb: (data: { id: string; text: string; timestamp: number }) => void) => () => void;
       onBotTyping: (cb: () => void) => () => void;
+      getAuthStatus: () => Promise<boolean>;
+      connect: () => Promise<boolean>;
+      disconnect: () => Promise<void>;
+      onAuthChanged: (cb: (connected: boolean) => void) => () => void;
     };
   }
 }
@@ -48,14 +52,16 @@ function renderMarkdown(text: string) {
   return DOMPurify.sanitize(html, { ALLOWED_TAGS: ["strong", "em", "code", "br"], ALLOWED_ATTR: ["class"] });
 }
 
-function TabBar({ tabs, activeId, pinned, onSelect, onClose, onNew, onTogglePin }: {
+function TabBar({ tabs, activeId, pinned, connected, onSelect, onClose, onNew, onTogglePin, onToggleConnect }: {
   tabs: Tab[];
   activeId: string;
   pinned: boolean;
+  connected: boolean;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
   onTogglePin: () => void;
+  onToggleConnect: () => void;
 }) {
   return (
     <div
@@ -101,6 +107,21 @@ function TabBar({ tabs, activeId, pinned, onSelect, onClose, onNew, onTogglePin 
       </Tooltip>
 
       <div className="flex-1" />
+
+      <Tooltip>
+        <TooltipTrigger render={<div />}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={onToggleConnect}
+            className={`mb-1 cursor-default ${connected ? "text-green-400" : "text-muted-foreground"}`}
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            {connected ? <Cable size={13} /> : <Unplug size={13} />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{connected ? "Google connected — click to disconnect" : "Connect Google account"}</TooltipContent>
+      </Tooltip>
 
       <Tooltip>
         <TooltipTrigger render={<div />}>
@@ -165,6 +186,7 @@ function App() {
   const [activeTab, setActiveTab] = useState("tab-1");
   const [messagesByTab, setMessagesByTab] = useState<Record<string, ChatMessage[]>>({ "tab-1": [] });
   const [pinned, setPinned] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -172,6 +194,12 @@ function App() {
   const typingTimeout = useRef<ReturnType<typeof setTimeout>>();
 
   const messages = messagesByTab[activeTab] ?? [];
+
+  useEffect(() => {
+    window.chatBridge.getAuthStatus().then(setConnected);
+    const offAuth = window.chatBridge.onAuthChanged(setConnected);
+    return offAuth;
+  }, []);
 
   useEffect(() => {
     const offMessage = window.chatBridge.onBotMessage((data) => {
@@ -219,6 +247,13 @@ function App() {
     setPinned(next);
   }, [pinned]);
 
+  const handleToggleConnect = useCallback(async () => {
+    if (connected)
+      await window.chatBridge.disconnect();
+    else
+      await window.chatBridge.connect();
+  }, [connected]);
+
   const handleNewTab = useCallback(() => {
     tabCounter++;
     const id = `tab-${tabCounter}`;
@@ -249,10 +284,12 @@ function App() {
           tabs={tabs}
           activeId={activeTab}
           pinned={pinned}
+          connected={connected}
           onSelect={setActiveTab}
           onClose={handleCloseTab}
           onNew={handleNewTab}
           onTogglePin={handleTogglePin}
+          onToggleConnect={handleToggleConnect}
         />
 
         <ScrollArea className="flex-1">

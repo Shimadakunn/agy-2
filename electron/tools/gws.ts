@@ -1,15 +1,16 @@
+import { google } from "googleapis";
 import { FunctionTool } from "@google/adk";
 import { z } from "zod";
-import { run } from "./exec.js";
 
-function gws(args: string[], timeoutMs = 30_000) {
-  return run("gws", args, timeoutMs);
-}
+const gmail = google.gmail("v1");
+const calendar = google.calendar("v3");
+const drive = google.drive("v3");
+const sheets = google.sheets("v4");
 
 export const createEmailDraft = new FunctionTool({
   name: "create_email_draft",
   description:
-    "Create a Gmail draft email. Returns the draft ID that can be used to open it in Gmail for the user to review and send manually.",
+    "Create a Gmail draft email. Returns the draft ID. After creating, open Gmail drafts in the browser so the user can review and send manually.",
   parameters: z.object({
     to: z.string().describe("Recipient email address"),
     subject: z.string().describe("Email subject line"),
@@ -30,64 +31,50 @@ export const createEmailDraft = new FunctionTool({
 
     const raw = Buffer.from(headers).toString("base64url");
 
-    const result = await gws([
-      "gmail", "users", "drafts", "create",
-      "--params", JSON.stringify({ userId: "me" }),
-      "--json", JSON.stringify({ message: { raw } }),
-    ]);
-
-    if (result.exitCode !== 0)
-      return { status: "error", error: result.stderr || result.stdout };
-
     try {
-      const data = JSON.parse(result.stdout);
-      return { status: "success", draftId: data.id, messageId: data.message?.id };
-    } catch {
-      return { status: "error", error: "Failed to parse gws response", raw: result.stdout };
+      const res = await gmail.users.drafts.create({
+        userId: "me",
+        requestBody: { message: { raw } },
+      });
+      return { status: "success", draftId: res.data.id, messageId: res.data.message?.id };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
     }
   },
 });
 
 export const listEmails = new FunctionTool({
   name: "list_emails",
-  description: "List recent emails from the user's Gmail inbox. Returns subject, sender, snippet, and date for each message.",
+  description: "List recent emails from the user's Gmail inbox. Returns subject, sender, snippet, and date.",
   parameters: z.object({
     query: z.string().optional().describe("Gmail search query (e.g. 'from:alice', 'is:unread', 'subject:report')"),
     maxResults: z.number().optional().describe("Max number of emails to return (default 10)"),
   }),
   execute: async ({ query, maxResults }) => {
-    const params: Record<string, unknown> = {
-      userId: "me",
-      maxResults: maxResults ?? 10,
-    };
-    if (query) params.q = query;
-
-    const result = await gws([
-      "gmail", "users", "messages", "list",
-      "--params", JSON.stringify(params),
-    ]);
-
-    if (result.exitCode !== 0)
-      return { status: "error", error: result.stderr || result.stdout };
-
     try {
-      const data = JSON.parse(result.stdout);
-      const messages = data.messages ?? [];
+      const list = await gmail.users.messages.list({
+        userId: "me",
+        maxResults: maxResults ?? 10,
+        q: query ?? undefined,
+      });
+
+      const messages = list.data.messages ?? [];
       if (messages.length === 0)
         return { status: "success", messages: [], note: "No emails found" };
 
       const details = await Promise.all(
-        messages.slice(0, maxResults ?? 10).map(async (msg: { id: string }) => {
-          const detail = await gws([
-            "gmail", "users", "messages", "get",
-            "--params", JSON.stringify({ userId: "me", id: msg.id, format: "metadata", metadataHeaders: ["From", "Subject", "Date"] }),
-          ]);
-          if (detail.exitCode !== 0) return null;
+        messages.map(async (msg) => {
           try {
-            const d = JSON.parse(detail.stdout);
-            const hdrs = d.payload?.headers ?? [];
-            const get = (name: string) => hdrs.find((h: { name: string; value: string }) => h.name === name)?.value ?? "";
-            return { id: msg.id, from: get("From"), subject: get("Subject"), date: get("Date"), snippet: d.snippet };
+            const detail = await gmail.users.messages.get({
+              userId: "me",
+              id: msg.id!,
+              format: "metadata",
+              metadataHeaders: ["From", "Subject", "Date"],
+            });
+            const headers = detail.data.payload?.headers ?? [];
+            const get = (name: string) => headers.find((h) => h.name === name)?.value ?? "";
+            return { id: msg.id, from: get("From"), subject: get("Subject"), date: get("Date"), snippet: detail.data.snippet };
           } catch {
             return null;
           }
@@ -95,8 +82,9 @@ export const listEmails = new FunctionTool({
       );
 
       return { status: "success", messages: details.filter(Boolean) };
-    } catch {
-      return { status: "error", error: "Failed to parse response", raw: result.stdout };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
     }
   },
 });
@@ -112,34 +100,29 @@ export const listCalendarEvents = new FunctionTool({
     const now = new Date();
     const future = new Date(now.getTime() + (daysAhead ?? 7) * 86400_000);
 
-    const result = await gws([
-      "calendar", "events", "list",
-      "--params", JSON.stringify({
+    try {
+      const res = await calendar.events.list({
         calendarId: "primary",
         timeMin: now.toISOString(),
         timeMax: future.toISOString(),
         maxResults: maxResults ?? 10,
         singleEvents: true,
         orderBy: "startTime",
-      }),
-    ]);
+      });
 
-    if (result.exitCode !== 0)
-      return { status: "error", error: result.stderr || result.stdout };
-
-    try {
-      const data = JSON.parse(result.stdout);
-      const events = (data.items ?? []).map((e: Record<string, unknown>) => ({
+      const events = (res.data.items ?? []).map((e) => ({
         id: e.id,
         summary: e.summary,
-        start: (e.start as Record<string, unknown>)?.dateTime ?? (e.start as Record<string, unknown>)?.date,
-        end: (e.end as Record<string, unknown>)?.dateTime ?? (e.end as Record<string, unknown>)?.date,
+        start: e.start?.dateTime ?? e.start?.date,
+        end: e.end?.dateTime ?? e.end?.date,
         location: e.location,
-        description: e.description,
+        htmlLink: e.htmlLink,
       }));
+
       return { status: "success", events };
-    } catch {
-      return { status: "error", error: "Failed to parse response", raw: result.stdout };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
     }
   },
 });
@@ -156,29 +139,25 @@ export const createCalendarEvent = new FunctionTool({
     attendees: z.array(z.string()).optional().describe("List of attendee email addresses"),
   }),
   execute: async ({ summary, startDateTime, endDateTime, description, location, attendees }) => {
-    const event: Record<string, unknown> = {
-      summary,
-      start: { dateTime: startDateTime, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
-      end: { dateTime: endDateTime, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
-    };
-    if (description) event.description = description;
-    if (location) event.location = location;
-    if (attendees?.length) event.attendees = attendees.map((email) => ({ email }));
-
-    const result = await gws([
-      "calendar", "events", "insert",
-      "--params", JSON.stringify({ calendarId: "primary" }),
-      "--json", JSON.stringify(event),
-    ]);
-
-    if (result.exitCode !== 0)
-      return { status: "error", error: result.stderr || result.stdout };
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
     try {
-      const data = JSON.parse(result.stdout);
-      return { status: "success", eventId: data.id, htmlLink: data.htmlLink };
-    } catch {
-      return { status: "error", error: "Failed to parse response", raw: result.stdout };
+      const res = await calendar.events.insert({
+        calendarId: "primary",
+        requestBody: {
+          summary,
+          start: { dateTime: startDateTime, timeZone },
+          end: { dateTime: endDateTime, timeZone },
+          description: description ?? undefined,
+          location: location ?? undefined,
+          attendees: attendees?.map((email) => ({ email })),
+        },
+      });
+
+      return { status: "success", eventId: res.data.id, htmlLink: res.data.htmlLink };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
     }
   },
 });
@@ -191,22 +170,17 @@ export const listDriveFiles = new FunctionTool({
     maxResults: z.number().optional().describe("Max files to return (default 10)"),
   }),
   execute: async ({ query, maxResults }) => {
-    const params: Record<string, unknown> = {
-      pageSize: maxResults ?? 10,
-      fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
-    };
-    if (query) params.q = query;
-
-    const result = await gws(["drive", "files", "list", "--params", JSON.stringify(params)]);
-
-    if (result.exitCode !== 0)
-      return { status: "error", error: result.stderr || result.stdout };
-
     try {
-      const data = JSON.parse(result.stdout);
-      return { status: "success", files: data.files ?? [] };
-    } catch {
-      return { status: "error", error: "Failed to parse response", raw: result.stdout };
+      const res = await drive.files.list({
+        pageSize: maxResults ?? 10,
+        fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
+        q: query ?? undefined,
+      });
+
+      return { status: "success", files: res.data.files ?? [] };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
     }
   },
 });
@@ -219,19 +193,12 @@ export const readSpreadsheet = new FunctionTool({
     range: z.string().describe("The A1 notation range to read (e.g. 'Sheet1!A1:C10')"),
   }),
   execute: async ({ spreadsheetId, range }) => {
-    const result = await gws([
-      "sheets", "spreadsheets", "values", "get",
-      "--params", JSON.stringify({ spreadsheetId, range }),
-    ]);
-
-    if (result.exitCode !== 0)
-      return { status: "error", error: result.stderr || result.stdout };
-
     try {
-      const data = JSON.parse(result.stdout);
-      return { status: "success", range: data.range, values: data.values ?? [] };
-    } catch {
-      return { status: "error", error: "Failed to parse response", raw: result.stdout };
+      const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+      return { status: "success", range: res.data.range, values: res.data.values ?? [] };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
     }
   },
 });
