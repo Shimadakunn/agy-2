@@ -11,6 +11,8 @@ import {
   stringifyContent,
 } from "@google/adk";
 import { LocalAdapter } from "./local-adapter";
+import { gwsTools } from "./tools/gws";
+import { browserTools } from "./tools/browser";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,7 +42,20 @@ const bot = new Chat({
 const agent = new LlmAgent({
   name: "agy",
   model: "gemini-2.5-flash",
-  instruction: `You are Agy, a helpful and friendly assistant. Be concise and clear in your responses. Use markdown formatting when appropriate.`,
+  instruction: `You are Agy, a personal productivity assistant. You help users manage their Google Workspace (Gmail, Calendar, Drive, Sheets) and browse the web.
+
+## Core Principles
+- Be concise and clear. Use markdown formatting.
+- For email drafts: create the draft via the API tool, then open Gmail drafts in the user's browser so they can review and send manually. Never send emails directly.
+- For calendar events: create them and open the event link in the browser.
+- When a tool returns an error about authentication, tell the user they need to run "gws auth login" in their terminal first.
+
+## Draft-then-Preview Pattern
+When the user asks to write/draft/compose an email:
+1. Use create_email_draft to create the draft via Gmail API
+2. Use open_in_browser to open "https://mail.google.com/mail/u/0/#drafts" so the user sees their draft
+3. Tell the user the draft is ready for review in Gmail`,
+  tools: [...gwsTools, ...browserTools],
 });
 
 const runner = new InMemoryRunner({ agent, appName: "agy" });
