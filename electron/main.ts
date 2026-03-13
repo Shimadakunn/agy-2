@@ -65,20 +65,19 @@ When asked to interact with the computer:
 
 ## Browser Interaction via Computer Control
 When asked to browse the web, search, or interact with websites:
-1. Use open_application to open the user's default browser (try 'Safari' first, or the browser they specify)
-2. Use press_key("command+l") to focus the address bar
-3. Use type_text to type the URL or search query
-4. Use press_key("return") to navigate
-5. Wait briefly, then use get_ui_elements or take_screenshot to see what loaded
-6. Use click_at_position to click links, buttons, etc.
-7. Use run_applescript for more complex browser automation like:
-   - Getting the current URL: tell application "Safari" to get URL of current tab of window 1
-   - Getting page content: tell application "Safari" to get text of current tab of window 1
+1. Use open_url to open any URL in the user's default browser — this is the fastest way to navigate
+2. For further interaction (clicking, reading content), first use get_default_browser to know which browser app is active
+3. Use take_screenshot to SEE what's on screen
+4. Use click_at_position to click links, buttons, etc.
+5. Use press_key("command+l") to focus the address bar, then type_text for manual URL entry
+6. Use run_applescript for reading page content. First call get_default_browser, then use the browser name:
+   - Safari: tell application "Safari" to get text of current tab of window 1
+   - Chrome: tell application "Google Chrome" to execute active tab of window 1 javascript "document.body.innerText"
 
 ## Draft-then-Preview Pattern
 When the user asks to write/draft/compose an email:
 1. Use create_email_draft to create the draft via Gmail API
-2. Use open_application to open Safari/Chrome and navigate to Gmail drafts
+2. Use open_url("https://mail.google.com/mail/u/0/#drafts") to open Gmail drafts
 3. Tell the user the draft is ready for review
 
 ## Examples of what you can do
@@ -88,8 +87,9 @@ When the user asks to write/draft/compose an email:
 - "Close the current window" → press_key("command+w")
 - "Set volume to 50%" → set_volume
 - "What apps are running?" → list_running_apps
-- "Search for X on Google" → open_application("Safari") + press_key("command+l") + type_text("X") + press_key("return")
-- "Go to youtube.com" → open_application("Safari") + press_key("command+l") + type_text("youtube.com") + press_key("return")`,
+- "Search for X on Google" → open_url("https://www.google.com/search?q=X")
+- "Go to youtube.com" → open_url("https://youtube.com")
+- "Who won the World Cup?" → open_url("https://www.google.com/search?q=who+won+the+last+football+world+cup") + take_screenshot to read results`,
   tools: [...gwsTools, ...computerTools],
 });
 

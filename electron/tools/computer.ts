@@ -343,8 +343,60 @@ export const setVolume = new FunctionTool({
   },
 });
 
+export const openUrl = new FunctionTool({
+  name: "open_url",
+  description:
+    "Open a URL in the user's default browser. This is the preferred way to open websites — it respects the user's default browser choice.",
+  parameters: z.object({
+    url: z.string().describe("The URL to open (e.g. 'https://google.com', 'https://mail.google.com/mail/u/0/#drafts')"),
+  }),
+  execute: async ({ url }) => {
+    try {
+      // Use macOS 'open' command which respects the default browser
+      await execAsync(`open ${JSON.stringify(url)}`, { timeout: 5000 });
+      return { status: "success", message: `Opened ${url} in default browser` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
+    }
+  },
+});
+
+export const getDefaultBrowser = new FunctionTool({
+  name: "get_default_browser",
+  description: "Get the name of the user's default web browser. Useful to know which app to target for browser automation via AppleScript.",
+  parameters: z.object({}),
+  execute: async () => {
+    try {
+      // Use macOS LaunchServices API via Python to get the default browser bundle ID
+      const bundleId = await execAsync(
+        `python3 -c "from LaunchServices import LSCopyDefaultHandlerForURLScheme; from Foundation import NSString; bid = LSCopyDefaultHandlerForURLScheme(NSString.stringWithString_('https')); print(bid or 'com.apple.Safari')"`,
+        { timeout: 5000 }
+      ).then((r) => r.stdout.trim()).catch(() => "com.apple.Safari");
+
+      const browserMap: Record<string, string> = {
+        "com.apple.safari": "Safari",
+        "com.google.chrome": "Google Chrome",
+        "org.mozilla.firefox": "Firefox",
+        "com.microsoft.edgemac": "Microsoft Edge",
+        "com.brave.browser": "Brave Browser",
+        "com.operasoftware.opera": "Opera",
+        "company.thebrowser.browser": "Arc",
+      };
+
+      const browserName = browserMap[bundleId.toLowerCase()] || bundleId;
+      return { status: "success", browser: browserName, bundleId };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "error", error: message };
+    }
+  },
+});
+
 export const computerTools = [
   openApplication,
+  openUrl,
+  getDefaultBrowser,
   getFrontmostApp,
   listRunningApps,
   clickAtPosition,
