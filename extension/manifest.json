@@ -1,0 +1,10 @@
+{
+  "name": "Agy Browser Bridge",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "description": "Direct WebSocket bridge between Agy desktop app and Chrome browser",
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["tabs","activeTab","scripting","debugger","downloads","webRequest","webNavigation","history","bookmarks","storage","alarms"],
+  "host_permissions": ["<all_urls>"],
+  "web_accessible_resources": [{ "resources": ["inject-scripts/*"], "matches": ["<all_urls>"] }]
+}

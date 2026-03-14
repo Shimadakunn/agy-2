@@ -1,13 +1,17 @@
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { WebSocketServer, WebSocket } from "ws";
+import { randomUUID } from "crypto";
 import { FunctionTool } from "@google/adk";
 import { z } from "zod";
 
-const MCP_CHROME_URL = "http://127.0.0.1:12306/mcp";
+const WS_PORT = 12307;
 
-let client: Client | null = null;
-let transport: StreamableHTTPClientTransport | null = null;
+let wss: WebSocketServer | null = null;
+let extensionSocket: WebSocket | null = null;
 let cachedTools: FunctionTool[] | null = null;
+const pendingRequests = new Map<
+  string,
+  { resolve: (v: any) => void; reject: (e: Error) => void }
+>();
 
 function jsonSchemaToZod(schema: Record<string, any>): z.ZodTypeAny {
   if (schema.enum)
@@ -50,47 +54,69 @@ function flattenContent(content: unknown): string {
     .join("\n");
 }
 
-async function resetConnection(): Promise<void> {
-  if (client) await client.close().catch(() => {});
-  client = null;
-  transport = null;
+function sendToExtension(msg: Record<string, unknown>): boolean {
+  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN)
+    return false;
+  extensionSocket.send(JSON.stringify(msg));
+  return true;
 }
 
-async function getClient(): Promise<Client> {
-  if (client) return client;
-  transport = new StreamableHTTPClientTransport(new URL(MCP_CHROME_URL));
-  client = new Client({ name: "agy", version: "1.0.0" });
-  await client.connect(transport);
-  return client;
+function requestFromExtension(
+  msg: Record<string, unknown>,
+  timeoutMs = 30000,
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const id = msg.id as string;
+    const timer = setTimeout(() => {
+      pendingRequests.delete(id);
+      reject(new Error(`Request ${msg.type} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    pendingRequests.set(id, {
+      resolve: (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    });
+    if (!sendToExtension(msg)) {
+      clearTimeout(timer);
+      pendingRequests.delete(id);
+      reject(new Error("Extension not connected"));
+    }
+  });
 }
 
-async function callToolWithRetry(
-  name: string,
-  args: Record<string, unknown>,
-): Promise<string> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const c = await getClient();
-      const result = await c.callTool({ name, arguments: args });
-      return flattenContent(result.content);
-    } catch (err) {
-      if (attempt === 0) {
-        await resetConnection();
-        continue;
-      }
-      throw err;
+function handleExtensionMessage(raw: string) {
+  let msg: any;
+  try {
+    msg = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  if (msg.type === "tool_result" || msg.type === "tool_list") {
+    const pending = pendingRequests.get(msg.id);
+    if (pending) {
+      pendingRequests.delete(msg.id);
+      pending.resolve(msg);
     }
   }
-  throw new Error("unreachable");
 }
 
-async function discoverTools(): Promise<FunctionTool[]> {
-  const c = await getClient();
-  const { tools } = await c.listTools();
+async function requestToolList(): Promise<FunctionTool[]> {
+  const id = randomUUID();
+  const response = await requestFromExtension(
+    { type: "list_tools", id },
+    10000,
+  );
+  const tools: any[] = response.tools || [];
 
   return tools.map((tool) => {
     const params = tool.inputSchema
-      ? jsonSchemaToZod(tool.inputSchema as Record<string, any>)
+      ? jsonSchemaToZod(tool.inputSchema)
       : z.object({});
 
     return new FunctionTool({
@@ -99,7 +125,17 @@ async function discoverTools(): Promise<FunctionTool[]> {
       parameters: params,
       execute: async (args) => {
         try {
-          return await callToolWithRetry(tool.name, args);
+          const callId = randomUUID();
+          const result = await requestFromExtension(
+            { type: "call_tool", id: callId, name: tool.name, args },
+            30000,
+          );
+          if (result.isError)
+            return JSON.stringify({
+              status: "error",
+              error: flattenContent(result.content),
+            });
+          return flattenContent(result.content);
         } catch (err: unknown) {
           return JSON.stringify({
             status: "error",
@@ -111,33 +147,78 @@ async function discoverTools(): Promise<FunctionTool[]> {
   });
 }
 
+function ensureServer(): void {
+  if (wss) return;
+  wss = new WebSocketServer({ host: "127.0.0.1", port: WS_PORT });
+  console.log(
+    `[BrowserBridge] WebSocket server listening on ws://127.0.0.1:${WS_PORT}`,
+  );
+
+  wss.on("connection", async (ws) => {
+    console.log("[BrowserBridge] Extension connected");
+    extensionSocket = ws;
+
+    ws.on("message", (data) => handleExtensionMessage(data.toString()));
+    ws.on("close", () => {
+      console.log("[BrowserBridge] Extension disconnected");
+      if (extensionSocket === ws) {
+        extensionSocket = null;
+        cachedTools = null;
+      }
+    });
+    ws.on("error", (err) =>
+      console.error("[BrowserBridge] WS error:", err.message),
+    );
+
+    try {
+      cachedTools = await requestToolList();
+      console.log(
+        `[BrowserBridge] Discovered ${cachedTools.length} tools from extension`,
+      );
+    } catch (err) {
+      console.warn("[BrowserBridge] Failed to get tool list:", err);
+    }
+  });
+
+  setInterval(() => {
+    if (extensionSocket?.readyState === WebSocket.OPEN)
+      sendToExtension({ type: "ping" });
+  }, 25000);
+}
+
 export async function getBrowserTools(): Promise<FunctionTool[]> {
+  ensureServer();
   if (cachedTools) return cachedTools;
-  try {
-    cachedTools = await discoverTools();
-    console.log(
-      `[BrowserBridge] Discovered ${cachedTools.length} Chrome MCP tools`,
-    );
-    return cachedTools;
-  } catch (err) {
-    console.warn(
-      "[BrowserBridge] Chrome MCP not available:",
-      err instanceof Error ? err.message : err,
-    );
-    return [];
+  if (extensionSocket?.readyState === WebSocket.OPEN) {
+    try {
+      cachedTools = await requestToolList();
+      console.log(
+        `[BrowserBridge] Discovered ${cachedTools.length} Chrome extension tools`,
+      );
+      return cachedTools;
+    } catch (err) {
+      console.warn(
+        "[BrowserBridge] Chrome extension not ready:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
+  return [];
 }
 
 export async function closeBrowserToolset(): Promise<void> {
-  await resetConnection();
+  extensionSocket?.close();
+  extensionSocket = null;
   cachedTools = null;
+  pendingRequests.forEach((p) => p.reject(new Error("Shutting down")));
+  pendingRequests.clear();
+  if (wss) {
+    wss.close();
+    wss = null;
+  }
 }
 
 export async function isBrowserExtensionConnected(): Promise<boolean> {
-  try {
-    const res = await fetch("http://127.0.0.1:12306/ping");
-    return res.ok;
-  } catch {
-    return false;
-  }
+  ensureServer();
+  return extensionSocket?.readyState === WebSocket.OPEN ?? false;
 }

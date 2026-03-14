@@ -31,6 +31,11 @@
       "sourceType": "github",
       "computedHash": "cdd25b149ccf824b029644cff565d04dd49f1743bb1a5e8a649a3adfe82e977c"
     },
+    "chrome-cdp": {
+      "source": "pasky/chrome-cdp-skill",
+      "sourceType": "github",
+      "computedHash": "595ae81798d146a931ac0b7c9b44d86fd407c5b5ff87108a68e5b62d3ad4d468"
+    },
     "electron": {
       "source": "vercel-labs/agent-browser",
       "sourceType": "github",
