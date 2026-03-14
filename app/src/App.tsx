@@ -417,7 +417,7 @@ function App() {
           onToggleConnect={handleToggleConnect}
         />
 
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           <div className="flex flex-col gap-2 px-4 py-3 min-h-full">
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center flex-1 min-h-[200px] gap-1 opacity-40">

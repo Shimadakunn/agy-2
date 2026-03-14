@@ -14,7 +14,17 @@ import { GoogleGenAI } from "@google/genai";
 import { LocalAdapter } from "./local-adapter";
 import { gwsTools } from "./tools/gws";
 import { computerTools } from "./tools/computer";
-import { loadStoredToken, startOAuthFlow, disconnect, isConnected } from "./auth";
+import {
+  getBrowserTools,
+  closeBrowserToolset,
+  isBrowserExtensionConnected,
+} from "./tools/browser-bridge";
+import {
+  loadStoredToken,
+  startOAuthFlow,
+  disconnect,
+  isConnected,
+} from "./auth";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,63 +51,28 @@ const bot = new Chat({
   logger: "debug",
 });
 
-const agent = new LlmAgent({
-  name: "agy",
-  model: "gemini-2.5-flash",
-  instruction: `You are Agy, a next-generation personal AI assistant that can control the user's Mac computer. You help users manage their Google Workspace, control their browser, AND interact with native macOS applications.
+const AGENT_INSTRUCTION = ``;
 
-## Core Principles
-- Be concise and clear. Use markdown formatting.
-- You have full computer control: you can open apps, click, type, press keyboard shortcuts, take screenshots, and inspect UI elements.
-- For email drafts: create via Gmail API, then navigate to drafts for review.
-- For calendar events: create them and navigate to the event link.
-- When a Google API tool returns an auth error, tell the user to click the Connect button.
-- Use computer control tools for ALL interactions: apps, browser, desktop.
-
-## Computer Control Strategy
-When asked to interact with the computer:
-1. First use get_frontmost_app or list_running_apps to understand the current state
-2. Use open_application to launch apps if needed (this works for browsers too: 'Safari', 'Google Chrome', 'Firefox', etc.)
-3. Use get_ui_elements to discover clickable buttons, text fields, menus
-4. Use type_text for text input, press_key for shortcuts, click_at_position for clicking
-5. Use take_screenshot to verify the result if needed
-6. For complex multi-step tasks, use run_applescript for powerful macOS automation
-
-## Browser Interaction via Computer Control
-When asked to browse the web, search, or interact with websites:
-1. Use open_url to open any URL in the user's default browser — this is the fastest way to navigate
-2. For further interaction (clicking, reading content), first use get_default_browser to know which browser app is active
-3. Use take_screenshot to SEE what's on screen
-4. Use click_at_position to click links, buttons, etc.
-5. Use press_key("command+l") to focus the address bar, then type_text for manual URL entry
-6. Use run_applescript for reading page content. First call get_default_browser, then use the browser name:
-   - Safari: tell application "Safari" to get text of current tab of window 1
-   - Chrome: tell application "Google Chrome" to execute active tab of window 1 javascript "document.body.innerText"
-
-## Draft-then-Preview Pattern
-When the user asks to write/draft/compose an email:
-1. Use create_email_draft to create the draft via Gmail API
-2. Use open_url("https://mail.google.com/mail/u/0/#drafts") to open Gmail drafts
-3. Tell the user the draft is ready for review
-
-## Examples of what you can do
-- "Open Spotify and play my liked songs" → open_application + AppleScript
-- "Switch to VS Code and open the terminal" → open_application + press_key("command+\`")
-- "Take a screenshot" → take_screenshot
-- "Close the current window" → press_key("command+w")
-- "Set volume to 50%" → set_volume
-- "What apps are running?" → list_running_apps
-- "Search for X on Google" → open_url("https://www.google.com/search?q=X")
-- "Go to youtube.com" → open_url("https://youtube.com")
-- "Who won the World Cup?" → open_url("https://www.google.com/search?q=who+won+the+last+football+world+cup") + take_screenshot to read results`,
-  tools: [...gwsTools, ...computerTools],
-});
-
-const runner = new InMemoryRunner({ agent, appName: "agy" });
-
+let runner: InMemoryRunner | null = null;
 const sessionIds = new Map<string, string>();
 
+async function initAgent(): Promise<number> {
+  const browserTools = await getBrowserTools();
+
+  const agent = new LlmAgent({
+    name: "agy",
+    model: "gemini-3.1-flash-lite-preview",
+    instruction: AGENT_INSTRUCTION,
+    tools: [...gwsTools, ...computerTools, ...browserTools],
+  });
+
+  runner = new InMemoryRunner({ agent, appName: "agy" });
+  return browserTools.length;
+}
+
 async function askAgent(userId: string, text: string): Promise<string> {
+  if (!runner) return "Agent not initialized yet. Please wait a moment.";
+
   let sessionId = sessionIds.get(userId);
   if (!sessionId) {
     const session = await runner.sessionService.createSession({
@@ -173,6 +148,11 @@ function createWindow() {
     return pinned;
   });
 
+  // Browser extension status
+  ipcMain.handle("browser:extension-status", () =>
+    isBrowserExtensionConnected(),
+  );
+
   // Google OAuth
   ipcMain.handle("auth:status", () => isConnected());
   ipcMain.handle("auth:connect", async () => {
@@ -196,32 +176,38 @@ function createWindow() {
   });
 
   // Transcribe audio using Gemini
-  ipcMain.handle("voice:transcribe", async (_event, audioBase64: string, mimeType: string) => {
-    try {
-      const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
-      if (!apiKey) return { error: "No Gemini API key configured" };
+  ipcMain.handle(
+    "voice:transcribe",
+    async (_event, audioBase64: string, mimeType: string) => {
+      try {
+        const apiKey =
+          process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
+        if (!apiKey) return { error: "No Gemini API key configured" };
 
-      const genai = new GoogleGenAI({ apiKey });
-      const response = await genai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType, data: audioBase64 } },
-              { text: "Transcribe this audio exactly. Return only the transcription text, nothing else. No quotes, no prefixes, no explanations." },
-            ],
-          },
-        ],
-      });
+        const genai = new GoogleGenAI({ apiKey });
+        const response = await genai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType, data: audioBase64 } },
+                {
+                  text: "Transcribe this audio exactly. Return only the transcription text, nothing else. No quotes, no prefixes, no explanations.",
+                },
+              ],
+            },
+          ],
+        });
 
-      const text = response.text?.trim();
-      return text ? { text } : { error: "No transcription produced" };
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { error: message };
-    }
-  });
+        const text = response.text?.trim();
+        return text ? { text } : { error: "No transcription produced" };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { error: message };
+      }
+    },
+  );
 
   if (VITE_DEV_SERVER_URL) win.loadURL(VITE_DEV_SERVER_URL);
   else win.loadFile(path.join(RENDERER_DIST, "index.html"));
@@ -238,8 +224,28 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
+app.on("before-quit", () => {
+  closeBrowserToolset();
+});
+
 app.whenReady().then(async () => {
   await loadStoredToken();
+  const browserToolCount = await initAgent();
   await bot.initialize();
   createWindow();
+
+  if (browserToolCount === 0) {
+    let attempts = 0;
+    const retryBrowserTools = async () => {
+      if (++attempts > 10) return;
+      if (await isBrowserExtensionConnected()) {
+        console.log("[Main] Chrome MCP bridge detected, reinitializing agent");
+        sessionIds.clear();
+        await initAgent();
+      } else {
+        setTimeout(retryBrowserTools, 3000);
+      }
+    };
+    setTimeout(retryBrowserTools, 3000);
+  }
 });
