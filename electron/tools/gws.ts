@@ -5,6 +5,7 @@ import path from "node:path";
 import { FunctionTool } from "@google/adk";
 import { z } from "zod";
 import { getAccessToken } from "../auth";
+import { openUrlInTab } from "./agent-browser";
 
 const execFile = promisify(execFileCb);
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB — schema responses can be large
@@ -67,6 +68,26 @@ async function runGws(args: string[], timeout = 30_000): Promise<string> {
   }
 }
 
+const WRITE_METHODS = new Set(["create", "insert"]);
+
+function extractCreatedUrl(data: Record<string, any>): string | null {
+  // Direct URL fields returned by Google APIs
+  if (data.spreadsheetUrl) return data.spreadsheetUrl;
+  if (data.webViewLink) return data.webViewLink;
+  if (data.htmlLink) return data.htmlLink;
+  if (data.meetingUri) return data.meetingUri;
+
+  // Construct URLs from resource IDs
+  if (data.documentId)
+    return `https://docs.google.com/document/d/${data.documentId}/edit`;
+  if (data.presentationId)
+    return `https://docs.google.com/presentation/d/${data.presentationId}/edit`;
+  if (data.spreadsheetId)
+    return `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`;
+
+  return null;
+}
+
 const gwsCommand = new FunctionTool({
   name: "gws",
   description: `Execute Google Workspace API operations. This is the PRIMARY tool for all Google actions — email, calendar, drive, docs, sheets, etc.
@@ -104,6 +125,7 @@ If unsure about parameters, call gws_schema first.`,
     try {
       // Split on spaces AND dots so both "spreadsheets values get" and "spreadsheets.values get" work
       const args = command.split(/[\s.]+/).filter(Boolean);
+      const method = args[args.length - 1]?.toLowerCase();
       if (params) args.push("--params", JSON.stringify(params));
       if (body) args.push("--json", JSON.stringify(body));
       if (pageAll) args.push("--page-all");
@@ -113,9 +135,18 @@ If unsure about parameters, call gws_schema first.`,
       const result = await runGws(args, pageAll ? 120_000 : 30_000);
       try {
         const parsed = JSON.parse(result);
-        // If the CLI itself returned an error object, surface it as an error
         if (parsed.error)
           return { status: "error", error: parsed.error.message || JSON.stringify(parsed.error) };
+
+        // Auto-open created resources in the browser
+        if (method && WRITE_METHODS.has(method)) {
+          const url = extractCreatedUrl(parsed);
+          if (url) {
+            console.log("[GWS tool] auto-opening:", url);
+            openUrlInTab(url).catch(() => {});
+          }
+        }
+
         console.log("[GWS tool] success");
         return { status: "success", data: parsed };
       } catch {

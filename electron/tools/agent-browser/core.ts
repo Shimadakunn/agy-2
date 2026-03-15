@@ -59,10 +59,14 @@ export async function resolveBin(): Promise<string> {
 // ── CDP Detection ──
 
 export async function detectCdp(): Promise<number | null> {
-  if (process.env.BROWSER_CDP_PORT)
-    return parseInt(process.env.BROWSER_CDP_PORT, 10);
+  const ports = [
+    process.env.BROWSER_CDP_PORT
+      ? parseInt(process.env.BROWSER_CDP_PORT, 10)
+      : null,
+    57450,
+  ].filter((p): p is number => p !== null);
 
-  for (const port of [57450]) {
+  for (const port of ports) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
         signal: AbortSignal.timeout(1000),

@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld("chatBridge", {
   requestMicPermission: (): Promise<boolean> => ipcRenderer.invoke("voice:request-mic-permission"),
   transcribeAudio: (audioBase64: string, mimeType: string): Promise<{ text?: string; error?: string }> =>
     ipcRenderer.invoke("voice:transcribe", audioBase64, mimeType),
+  showOverlay: (tabIndex: number, tabLabel: string) =>
+    ipcRenderer.send("overlay:show", tabIndex, tabLabel),
+  hideOverlay: () => ipcRenderer.send("overlay:hide"),
+  updateOverlay: (tabIndex: number, tabLabel: string, isTranscribing: boolean) =>
+    ipcRenderer.send("overlay:update", tabIndex, tabLabel, isTranscribing),
   loadConversations: (): Promise<{ id: string; label: string; createdAt: number; updatedAt: number; browserTabs?: { url: string; title: string }[] }[]> =>
     ipcRenderer.invoke("db:load-conversations"),
   getChatBrowserTabs: (chatId: string): Promise<{ index: number; url: string; title: string; active: boolean }[]> =>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Mic, Paperclip, History } from "lucide-react";
+import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Paperclip, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -46,6 +46,9 @@ declare global {
       onAuthChanged: (cb: (connected: boolean) => void) => () => void;
       requestMicPermission: () => Promise<boolean>;
       transcribeAudio: (audioBase64: string, mimeType: string) => Promise<{ text?: string; error?: string }>;
+      showOverlay: (tabIndex: number, tabLabel: string) => void;
+      hideOverlay: () => void;
+      updateOverlay: (tabIndex: number, tabLabel: string, isTranscribing: boolean) => void;
       loadConversations: () => Promise<{ id: string; label: string; createdAt: number; updatedAt: number; browserTabs?: { url: string; title: string }[] }[]>;
       loadMessages: (tabId: string) => Promise<{ id: string; text: string; author: "user" | "bot"; timestamp: number; files?: { name: string; mimeType: string }[] }[]>;
       saveConversation: (tabId: string, label: string) => void;
@@ -312,21 +315,32 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function usePushToTalk(onResult: (text: string) => void) {
-  const [isListening, setIsListening] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+function usePushToTalk(
+  onResult: (tabId: string, text: string) => void,
+  ensureTab: (index: number) => { id: string; label: string },
+) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const isHolding = useRef(false);
+  const targetRef = useRef<{ id: string; label: string; index: number } | null>(null);
+  const ensureTabRef = useRef(ensureTab);
+  ensureTabRef.current = ensureTab;
 
   const startRecording = useCallback(async () => {
     if (isHolding.current) return;
     isHolding.current = true;
 
+    const target = targetRef.current;
+    if (!target) { isHolding.current = false; return; }
+
+    window.chatBridge.showOverlay(target.index, target.label);
+
     const granted = await window.chatBridge.requestMicPermission().catch(() => false);
     if (!granted) {
       isHolding.current = false;
+      targetRef.current = null;
+      window.chatBridge.hideOverlay();
       return;
     }
 
@@ -335,7 +349,6 @@ function usePushToTalk(onResult: (text: string) => void) {
       streamRef.current = stream;
       chunksRef.current = [];
 
-      // Use webm/opus which Gemini supports
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : "audio/webm";
@@ -346,11 +359,12 @@ function usePushToTalk(onResult: (text: string) => void) {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      recorder.start(100); // collect chunks every 100ms
-      setIsListening(true);
+      recorder.start(100);
     } catch (err) {
       console.warn("Failed to start recording:", err);
       isHolding.current = false;
+      targetRef.current = null;
+      window.chatBridge.hideOverlay();
     }
   }, []);
 
@@ -358,13 +372,15 @@ function usePushToTalk(onResult: (text: string) => void) {
     if (!isHolding.current) return;
     isHolding.current = false;
 
+    const target = targetRef.current;
+    targetRef.current = null;
+
     const recorder = mediaRecorderRef.current;
     if (!recorder || recorder.state === "inactive") {
-      setIsListening(false);
+      window.chatBridge.hideOverlay();
       return;
     }
 
-    // Wait for the recorder to finish flushing data
     const audioBlob = await new Promise<Blob>((resolve) => {
       recorder.onstop = () => {
         resolve(new Blob(chunksRef.current, { type: recorder.mimeType }));
@@ -372,49 +388,56 @@ function usePushToTalk(onResult: (text: string) => void) {
       recorder.stop();
     });
 
-    // Stop all microphone tracks
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     mediaRecorderRef.current = null;
-    setIsListening(false);
 
-    // Skip if too short (< 0.5s of audio ~ very small blob)
-    if (audioBlob.size < 1000) return;
+    if (audioBlob.size < 1000 || !target) {
+      window.chatBridge.hideOverlay();
+      return;
+    }
 
-    // Convert to base64 and send to Gemini for transcription
-    setIsTranscribing(true);
+    // Switch overlay to transcribing state
+    window.chatBridge.updateOverlay(target.index, target.label, true);
+
     try {
-      const buffer = await audioBlob.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-      const result = await window.chatBridge.transcribeAudio(base64, "audio/webm");
-      if (result.text) onResult(result.text);
+      const bytes = new Uint8Array(await audioBlob.arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 8192)
+        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      const result = await window.chatBridge.transcribeAudio(btoa(binary), "audio/webm");
+      if (result.text) onResult(target.id, result.text);
       else if (result.error) console.warn("Transcription error:", result.error);
     } catch (err) {
       console.warn("Transcription failed:", err);
     } finally {
-      setIsTranscribing(false);
+      window.chatBridge.hideOverlay();
     }
   }, [onResult]);
 
-  // Control key hold detection
+  // Ctrl + digit (1-9) hold detection
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Control" && !e.repeat) startRecording();
+      if (e.ctrlKey && /^[1-9]$/.test(e.key) && !e.repeat) {
+        e.preventDefault();
+        const index = parseInt(e.key, 10) - 1;
+        const tab = ensureTabRef.current(index);
+        targetRef.current = { id: tab.id, label: tab.label, index };
+        startRecording();
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.key === "Control") stopRecording();
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
     };
   }, [startRecording, stopRecording]);
-
-  return { isListening, isTranscribing };
 }
 
 let tabCounter = 1;
@@ -440,10 +463,36 @@ function App() {
   const messages = messagesByTab[activeTab] ?? [];
   const isTyping = isTypingByTab[activeTab] ?? false;
 
-  // Push-to-talk: hold Control to speak, release to send
+  // Push-to-talk: hold Ctrl+1/2/3... to speak to a specific tab
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
+  const ensureTabAtIndex = useCallback((index: number): { id: string; label: string } => {
+    const current = tabsRef.current;
+    if (index < current.length) return current[index];
+
+    const created: Tab[] = [];
+    for (let i = current.length; i <= index; i++) {
+      tabCounter++;
+      created.push({ id: `tab-${tabCounter}`, label: `Chat ${tabCounter}` });
+    }
+
+    setTabs((prev) => [...prev, ...created]);
+    setMessagesByTab((prev) => {
+      const fresh: Record<string, ChatMessage[]> = {};
+      for (const t of created) fresh[t.id] = [];
+      return { ...prev, ...fresh };
+    });
+    for (const t of created) window.chatBridge.saveConversation(t.id, t.label);
+
+    // Update ref immediately so subsequent calls in the same tick see the new tabs
+    tabsRef.current = [...current, ...created];
+
+    return created[created.length - 1];
+  }, []);
+
   const handleVoiceResult = useCallback(
-    (text: string) => {
-      const tabId = activeTab;
+    (tabId: string, text: string) => {
       setMessagesByTab((prev) => ({
         ...prev,
         [tabId]: [
@@ -452,12 +501,15 @@ function App() {
         ],
       }));
       setIsTypingByTab((prev) => ({ ...prev, [tabId]: true }));
+      setActiveTab(tabId);
       window.chatBridge.sendMessage(tabId, text);
+      const tab = tabsRef.current.find((t) => t.id === tabId);
+      if (tab) window.chatBridge.saveConversation(tabId, tab.label);
     },
-    [activeTab]
+    []
   );
 
-  const { isListening, isTranscribing } = usePushToTalk(handleVoiceResult);
+  usePushToTalk(handleVoiceResult, ensureTabAtIndex);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -740,14 +792,6 @@ function App() {
             </div>
           )}
           <div className="flex items-center gap-2 px-3 py-2.5">
-            {(isListening || isTranscribing) && (
-              <div className={`flex items-center gap-1.5 ${isListening ? "text-red-400 animate-pulse" : "text-yellow-400"}`}>
-                <Mic size={14} />
-                <span className="text-[11px] font-medium">
-                  {isListening ? "Recording..." : "Transcribing..."}
-                </span>
-              </div>
-            )}
             <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
             <Button
               variant="ghost"
@@ -759,18 +803,14 @@ function App() {
             </Button>
             <Input
               ref={inputRef}
-              placeholder={
-                isListening ? "Speak now... (release Control to send)"
-                : isTranscribing ? "Transcribing..."
-                : "Message... (hold Control to speak)"
-              }
+              placeholder="Message... (hold ⌃+1/2/3 to speak to a tab)"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) handleSend();
               }}
               autoFocus
-              className={`flex-1 bg-secondary text-[13px] ${isListening ? "border-red-400/50" : isTranscribing ? "border-yellow-400/50" : ""}`}
+              className="flex-1 bg-secondary text-[13px]"
             />
             <Button
               size="icon"

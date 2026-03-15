@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, ipcMain, screen, shell, systemPreferences } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -52,6 +52,138 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   : RENDERER_DIST;
 
 let win: BrowserWindow | null;
+let overlayWin: BrowserWindow | null = null;
+
+const OVERLAY_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden}
+@keyframes spin{from{--glow-angle:0deg}to{--glow-angle:360deg}}
+@keyframes breathe{0%,100%{opacity:.85}50%{opacity:1}}
+@keyframes appear{from{opacity:0}to{opacity:1}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+.overlay{position:fixed;inset:0;animation:appear .3s ease-out}
+.glow{
+  position:absolute;inset:0;border-radius:12px;
+  overflow:hidden;
+  filter:blur(60px) brightness(1.3);
+  animation:breathe 2s ease-in-out infinite;
+}
+.glow-ring{
+  position:absolute;inset:0;
+  background:conic-gradient(from var(--glow-angle) at 50% 50%,#7c3aed,#3b82f6,#06b6d4,#a855f7,#ec4899,#f97316,#7c3aed);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+  padding:14px;
+  animation:spin 4s linear infinite;
+}
+.glow-soft{
+  position:absolute;inset:0;border-radius:12px;
+  overflow:hidden;
+  filter:blur(120px) brightness(1.1);
+  opacity:.6;
+}
+.glow-soft .glow-ring{padding:24px}
+.label{
+  position:absolute;bottom:48px;left:50%;transform:translateX(-50%);
+  display:flex;align-items:center;gap:8px;
+  background:rgba(0,0,0,.55);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-radius:999px;padding:8px 16px;border:1px solid rgba(255,255,255,.08);
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;
+}
+.mic{width:14px;height:14px;border-radius:50%}
+.mic.recording{background:#f87171;animation:pulse 1.5s ease-in-out infinite;box-shadow:0 0 8px rgba(248,113,113,.5)}
+.mic.transcribing{background:#fbbf24;box-shadow:0 0 8px rgba(251,191,36,.5)}
+.tab-label{font-size:13px;font-weight:500;color:rgba(255,255,255,.9)}
+kbd{font-size:11px;font-family:'SF Mono',ui-monospace,monospace;background:rgba(255,255,255,.08);border-radius:4px;padding:2px 6px;color:rgba(255,255,255,.5)}
+</style></head><body>
+<div class="overlay">
+  <div class="glow"><div class="glow-ring"></div></div>
+  <div class="glow-soft"><div class="glow-ring"></div></div>
+  <div class="label">
+    <div id="mic" class="mic recording"></div>
+    <span id="tab-label" class="tab-label"></span>
+    <kbd id="kbd"></kbd>
+  </div>
+</div>
+</body></html>`;
+
+function ensureOverlayWindow() {
+  if (overlayWin && !overlayWin.isDestroyed()) return overlayWin;
+
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+
+  overlayWin = new BrowserWindow({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    transparent: true,
+    backgroundColor: "#00000000",
+    frame: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    focusable: false,
+    resizable: false,
+    movable: false,
+    show: false,
+    roundedCorners: false,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+
+  overlayWin.setIgnoreMouseEvents(true);
+  overlayWin.setVisibleOnAllWorkspaces(true);
+  overlayWin.setAlwaysOnTop(true, "floating");
+  overlayWin.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(OVERLAY_HTML)}`
+  );
+  overlayWin.on("closed", () => { overlayWin = null; });
+
+  return overlayWin;
+}
+
+function showOverlay(tabIndex: number, tabLabel: string) {
+  const overlay = ensureOverlayWindow();
+
+  // Position on the display containing the cursor
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  overlay.setBounds(display.bounds);
+
+  const update = () => {
+    overlay.webContents
+      .executeJavaScript(
+        `document.getElementById('tab-label').textContent=${JSON.stringify(tabLabel)};` +
+        `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
+        `document.getElementById('mic').className='mic recording';`
+      )
+      .catch(() => {});
+  };
+
+  if (overlay.webContents.isLoading())
+    overlay.webContents.once("did-finish-load", () => { update(); overlay.show(); });
+  else { update(); overlay.show(); }
+}
+
+function hideOverlay() {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  overlayWin.hide();
+}
+
+function updateOverlay(tabIndex: number, tabLabel: string, isTranscribing: boolean) {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  overlayWin.webContents
+    .executeJavaScript(
+      `document.getElementById('tab-label').textContent=${JSON.stringify(isTranscribing ? "Transcribing..." : tabLabel)};` +
+      `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
+      `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`
+    )
+    .catch(() => {});
+}
 
 const localAdapter = new LocalAdapter("Agy");
 
@@ -253,6 +385,15 @@ function createWindow() {
     win?.webContents.send("auth:changed", false);
   });
 
+  // Voice overlay — fullscreen transparent glow
+  ipcMain.on("overlay:show", (_event, tabIndex: number, tabLabel: string) => {
+    showOverlay(tabIndex, tabLabel);
+  });
+  ipcMain.on("overlay:hide", () => { hideOverlay(); });
+  ipcMain.on("overlay:update", (_event, tabIndex: number, tabLabel: string, isTranscribing: boolean) => {
+    updateOverlay(tabIndex, tabLabel, isTranscribing);
+  });
+
   // Microphone permission for voice input
   ipcMain.handle("voice:request-mic-permission", async () => {
     if (process.platform === "darwin") {
@@ -326,6 +467,7 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   closeBrowserToolset();
+  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.close();
 });
 
 app.whenReady().then(async () => {

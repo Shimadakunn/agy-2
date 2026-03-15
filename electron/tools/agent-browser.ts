@@ -10,7 +10,13 @@ const execFile = promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Resolve the agent-browser binary: node_modules/.bin first, then PATH
-const localBin = path.resolve(__dirname, "..", "node_modules", ".bin", "agent-browser");
+const localBin = path.resolve(
+  __dirname,
+  "..",
+  "node_modules",
+  ".bin",
+  "agent-browser",
+);
 let bin = "";
 let cdpPort: number | null = null;
 
@@ -32,14 +38,20 @@ async function resolveBin(): Promise<string> {
       return bin;
     } catch {}
   }
-  throw new Error("agent-browser binary not found. Run: pnpm add agent-browser");
+  throw new Error(
+    "agent-browser binary not found. Run: pnpm add agent-browser",
+  );
 }
 
 async function detectCdp(): Promise<number | null> {
-  if (process.env.BROWSER_CDP_PORT)
-    return parseInt(process.env.BROWSER_CDP_PORT, 10);
+  const ports = [
+    process.env.BROWSER_CDP_PORT
+      ? parseInt(process.env.BROWSER_CDP_PORT, 10)
+      : null,
+    57450,
+  ].filter((p): p is number => p !== null);
 
-  for (const port of [57450]) {
+  for (const port of ports) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
         signal: AbortSignal.timeout(1000),
@@ -68,10 +80,15 @@ async function runRaw(args: string[], timeout = 30_000): Promise<string> {
 
     if (out && !out.includes("Failed to connect")) return out;
 
-    if (errMsg.includes("Failed to connect") || out.includes("Failed to connect"))
+    if (
+      errMsg.includes("Failed to connect") ||
+      out.includes("Failed to connect")
+    )
       cdpPort = null;
 
-    throw new Error(out || errMsg || (err instanceof Error ? err.message : String(err)));
+    throw new Error(
+      out || errMsg || (err instanceof Error ? err.message : String(err)),
+    );
   }
 }
 
@@ -91,19 +108,42 @@ async function fetchCdpTargets(): Promise<CdpTarget[]> {
     const res = await fetch(`http://127.0.0.1:${cdpPort}/json`, {
       signal: AbortSignal.timeout(2000),
     });
-    return ((await res.json()) as CdpTarget[]).filter((t) => t.type === "page");
-  } catch {
+    const all = (await res.json()) as CdpTarget[];
+    const pages = all.filter((t) => t.type === "page");
+    console.log(
+      `[Browser] fetchCdpTargets: ${all.length} targets, ${pages.length} pages`,
+    );
+    if (!pages.length && all.length)
+      console.log(
+        `[Browser] target types: ${[...new Set(all.map((t) => t.type))].join(", ")}`,
+      );
+    return pages;
+  } catch (err) {
+    console.warn(
+      "[Browser] fetchCdpTargets failed:",
+      err instanceof Error ? err.message : err,
+    );
     return [];
   }
 }
 
 async function createCdpTab(url = "about:blank"): Promise<CdpTarget | null> {
+  const endpoint = `http://127.0.0.1:${cdpPort}/json/new?${url}`;
   try {
-    const res = await fetch(`http://127.0.0.1:${cdpPort}/json/new?${url}`, {
+    const res = await fetch(endpoint, {
       signal: AbortSignal.timeout(5000),
     });
-    return (await res.json()) as CdpTarget;
-  } catch {
+    const body = await res.text();
+    console.log(
+      `[Browser] createCdpTab: status=${res.status} body=${body.slice(0, 200)}`,
+    );
+    if (!res.ok) return null;
+    return JSON.parse(body) as CdpTarget;
+  } catch (err) {
+    console.warn(
+      `[Browser] createCdpTab failed (${endpoint}):`,
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }
@@ -122,7 +162,9 @@ async function ensureAndSwitchTab(chatTabId: string): Promise<void> {
   try {
     let targetId = tabTargets.get(chatTabId);
     let targets = await fetchCdpTargets();
-    console.log(`[Browser] ensureTab: chat=${chatTabId} existing=${targetId ?? "none"} pages=${targets.length}`);
+    console.log(
+      `[Browser] ensureTab: chat=${chatTabId} existing=${targetId ?? "none"} pages=${targets.length}`,
+    );
 
     // Target was closed externally — clear stale mapping
     if (targetId && !targets.some((t) => t.id === targetId)) {
@@ -138,17 +180,24 @@ async function ensureAndSwitchTab(chatTabId: string): Promise<void> {
         console.warn("[Browser] createCdpTab returned null");
         return;
       }
-      console.log(`[Browser] created CDP tab ${newTarget.id} (${newTarget.url})`);
+      console.log(
+        `[Browser] created CDP tab ${newTarget.id} (${newTarget.url})`,
+      );
       targetId = newTarget.id;
       tabTargets.set(chatTabId, targetId);
       targets = await fetchCdpTargets();
     }
 
     const index = targets.findIndex((t) => t.id === targetId);
-    console.log(`[Browser] switching to tab index=${index} for chat=${chatTabId}`);
+    console.log(
+      `[Browser] switching to tab index=${index} for chat=${chatTabId}`,
+    );
     if (index >= 0) await runRaw(["tab", String(index)]);
   } catch (err) {
-    console.warn("[Browser] ensureAndSwitchTab failed:", err instanceof Error ? err.message : err);
+    console.warn(
+      "[Browser] ensureAndSwitchTab failed:",
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
@@ -157,7 +206,9 @@ async function run(args: string[], timeout = 30_000): Promise<string> {
 
   const chatTabId = chatTabContext.getStore();
   if (chatTabId && cdpPort && chatTabId !== lastSwitchedTab) {
-    console.log(`[Browser] run: switching context to chat=${chatTabId} (was ${lastSwitchedTab})`);
+    console.log(
+      `[Browser] run: switching context to chat=${chatTabId} (was ${lastSwitchedTab})`,
+    );
     await ensureAndSwitchTab(chatTabId);
     lastSwitchedTab = chatTabId;
   }
@@ -205,7 +256,9 @@ const browserSnapshot = new FunctionTool({
     includeClickable: z
       .boolean()
       .optional()
-      .describe("Also include elements with cursor:pointer (divs with onclick, etc.)"),
+      .describe(
+        "Also include elements with cursor:pointer (divs with onclick, etc.)",
+      ),
   }),
   execute: async ({ includeClickable }) => {
     try {
@@ -224,7 +277,9 @@ const browserClick = new FunctionTool({
   description:
     "Click an interactive element by its ref (e.g. @e1). Get refs from browser_snapshot first. After clicking a link that navigates, call browser_snapshot again to get new refs.",
   parameters: z.object({
-    ref: z.string().describe("Element ref from browser_snapshot (e.g. @e1, @e2)"),
+    ref: z
+      .string()
+      .describe("Element ref from browser_snapshot (e.g. @e1, @e2)"),
   }),
   execute: async ({ ref }) => {
     try {
@@ -325,7 +380,9 @@ const browserPressKey = new FunctionTool({
   description:
     "Press a keyboard key in the browser. Examples: Enter, Escape, Tab, ArrowDown, Backspace.",
   parameters: z.object({
-    key: z.string().describe("Key to press (e.g. Enter, Escape, Tab, ArrowDown, Backspace)"),
+    key: z
+      .string()
+      .describe("Key to press (e.g. Enter, Escape, Tab, ArrowDown, Backspace)"),
   }),
   execute: async ({ key }) => {
     try {
@@ -404,7 +461,9 @@ const browserScreenshot = new FunctionTool({
     fullPage: z
       .boolean()
       .optional()
-      .describe("Capture the full scrollable page instead of just the viewport"),
+      .describe(
+        "Capture the full scrollable page instead of just the viewport",
+      ),
   }),
   execute: async ({ fullPage }) => {
     try {
@@ -443,7 +502,10 @@ export async function openUrlInTab(url: string): Promise<void> {
       console.log(`[Browser] opened ${url} in tab`);
       return;
     } catch (err) {
-      console.warn("[Browser] tab-aware open failed:", err instanceof Error ? err.message : err);
+      console.warn(
+        "[Browser] tab-aware open failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
 
     // Try 2: raw navigation (skip tab context, use whatever page agent-browser targets)
@@ -452,7 +514,10 @@ export async function openUrlInTab(url: string): Promise<void> {
       console.log(`[Browser] opened ${url} (raw fallback)`);
       return;
     } catch (err) {
-      console.warn("[Browser] raw open failed:", err instanceof Error ? err.message : err);
+      console.warn(
+        "[Browser] raw open failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
@@ -461,17 +526,40 @@ export async function openUrlInTab(url: string): Promise<void> {
     await execFile("open", [url], { timeout: 5000 });
     console.log(`[Browser] opened ${url} in system browser`);
   } catch (err) {
-    console.warn("[Browser] system open failed:", err instanceof Error ? err.message : err);
+    console.warn(
+      "[Browser] system open failed:",
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
 /** Close the browser tab associated with a chat tab. */
-export async function cleanupBrowserTab(chatTabId: string): Promise<void> {
+export async function cleanupChatTabs(chatTabId: string): Promise<void> {
   const targetId = tabTargets.get(chatTabId);
   if (!targetId) return;
   tabTargets.delete(chatTabId);
   if (lastSwitchedTab === chatTabId) lastSwitchedTab = null;
   if (cdpPort) await closeCdpTargetTab(targetId);
+}
+
+/** Return info about browser tabs owned by a chat tab. */
+export async function getChatTabInfo(
+  chatTabId: string,
+): Promise<{ url: string; title: string; active: boolean }[]> {
+  const targetId = tabTargets.get(chatTabId);
+  if (!targetId || !cdpPort) return [];
+
+  const targets = await fetchCdpTargets();
+  const target = targets.find((t) => t.id === targetId);
+  if (!target) return [];
+
+  return [
+    {
+      url: target.url,
+      title: target.url,
+      active: lastSwitchedTab === chatTabId,
+    },
+  ];
 }
 
 export async function getBrowserTools(): Promise<FunctionTool[]> {
@@ -485,7 +573,10 @@ export async function getBrowserTools(): Promise<FunctionTool[]> {
 
   cdpPort = await detectCdp();
   if (cdpPort) console.log(`[Browser] CDP detected on port ${cdpPort}`);
-  else console.warn("[Browser] No browser CDP port detected. Tools will retry on use.");
+  else
+    console.warn(
+      "[Browser] No browser CDP port detected. Tools will retry on use.",
+    );
 
   return allTools;
 }
