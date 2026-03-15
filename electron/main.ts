@@ -1,11 +1,4 @@
-import {
-  app,
-  BrowserWindow,
-  ipcMain,
-  screen,
-  shell,
-  systemPreferences,
-} from "electron";
+import { app, BrowserWindow, ipcMain, screen, shell, systemPreferences } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -147,11 +140,9 @@ function ensureOverlayWindow() {
   overlayWin.setVisibleOnAllWorkspaces(true);
   overlayWin.setAlwaysOnTop(true, "floating");
   overlayWin.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(OVERLAY_HTML)}`,
+    `data:text/html;charset=utf-8,${encodeURIComponent(OVERLAY_HTML)}`
   );
-  overlayWin.on("closed", () => {
-    overlayWin = null;
-  });
+  overlayWin.on("closed", () => { overlayWin = null; });
 
   return overlayWin;
 }
@@ -167,13 +158,14 @@ function showOverlay(tabIndex: number, tabLabel: string) {
     overlay.webContents
       .executeJavaScript(
         `document.getElementById('tab-label').textContent=${JSON.stringify(tabLabel)};` +
-          `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
-          `document.getElementById('mic').className='mic recording';`,
+        `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
+        `document.getElementById('mic').className='mic recording';`
       )
       .catch(() => {});
   };
 
   if (overlay.webContents.isLoading())
+<<<<<<< HEAD
     overlay.webContents.once("did-finish-load", () => {
       update();
       overlay.show();
@@ -182,6 +174,10 @@ function showOverlay(tabIndex: number, tabLabel: string) {
     update();
     overlay.show();
   }
+=======
+    overlay.webContents.once("did-finish-load", () => { update(); overlay.show(); });
+  else { update(); overlay.show(); }
+>>>>>>> 5160f8e (wip)
 }
 
 function hideOverlay() {
@@ -189,17 +185,18 @@ function hideOverlay() {
   overlayWin.hide();
 }
 
-function updateOverlay(
-  tabIndex: number,
-  tabLabel: string,
-  isTranscribing: boolean,
-) {
+function updateOverlay(tabIndex: number, tabLabel: string, isTranscribing: boolean) {
   if (!overlayWin || overlayWin.isDestroyed()) return;
   overlayWin.webContents
     .executeJavaScript(
       `document.getElementById('tab-label').textContent=${JSON.stringify(isTranscribing ? "Transcribing..." : tabLabel)};` +
+<<<<<<< HEAD
         `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
         `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`,
+=======
+      `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
+      `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`
+>>>>>>> 5160f8e (wip)
     )
     .catch(() => {});
 }
@@ -442,15 +439,10 @@ function createWindow() {
   ipcMain.on("overlay:show", (_event, tabIndex: number, tabLabel: string) => {
     showOverlay(tabIndex, tabLabel);
   });
-  ipcMain.on("overlay:hide", () => {
-    hideOverlay();
+  ipcMain.on("overlay:hide", () => { hideOverlay(); });
+  ipcMain.on("overlay:update", (_event, tabIndex: number, tabLabel: string, isTranscribing: boolean) => {
+    updateOverlay(tabIndex, tabLabel, isTranscribing);
   });
-  ipcMain.on(
-    "overlay:update",
-    (_event, tabIndex: number, tabLabel: string, isTranscribing: boolean) => {
-      updateOverlay(tabIndex, tabLabel, isTranscribing);
-    },
-  );
 
   // Microphone permission for voice input
   ipcMain.handle("voice:request-mic-permission", async () => {
