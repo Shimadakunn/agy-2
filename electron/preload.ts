@@ -50,4 +50,14 @@ contextBridge.exposeInMainWorld("chatBridge", {
   requestMicPermission: (): Promise<boolean> => ipcRenderer.invoke("voice:request-mic-permission"),
   transcribeAudio: (audioBase64: string, mimeType: string): Promise<{ text?: string; error?: string }> =>
     ipcRenderer.invoke("voice:transcribe", audioBase64, mimeType),
+  loadConversations: (): Promise<{ id: string; label: string; createdAt: number; updatedAt: number; browserTabs?: { url: string; title: string }[] }[]> =>
+    ipcRenderer.invoke("db:load-conversations"),
+  getChatBrowserTabs: (chatId: string): Promise<{ index: number; url: string; title: string; active: boolean }[]> =>
+    ipcRenderer.invoke("browser:chat-tabs", chatId),
+  loadMessages: (tabId: string): Promise<{ id: string; text: string; author: "user" | "bot"; timestamp: number; files?: { name: string; mimeType: string }[] }[]> =>
+    ipcRenderer.invoke("db:load-messages", tabId),
+  saveConversation: (tabId: string, label: string) =>
+    ipcRenderer.send("chat:save-conversation", tabId, label),
+  getUserEmail: (): Promise<string | null> =>
+    ipcRenderer.invoke("db:get-user-email"),
 });

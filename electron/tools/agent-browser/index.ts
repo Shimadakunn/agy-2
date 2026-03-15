@@ -8,9 +8,10 @@ import {
 
 export {
   openUrlInTab,
-  cleanupBrowserTab,
+  cleanupChatTabs,
   closeBrowserToolset,
   isBrowserConnected,
+  getChatTabInfo,
 } from "./core";
 
 // Navigation
@@ -44,7 +45,7 @@ import {
   browserSetViewport,
 } from "./advanced";
 // Tab management
-import { browserTabList, browserTabSwitch } from "./tabs";
+import { browserTabList, browserTabNew, browserTabSwitch, browserTabClose } from "./tabs";
 
 const allTools: FunctionTool[] = [
   // Navigation
@@ -74,7 +75,9 @@ const allTools: FunctionTool[] = [
   browserSetViewport,
   // Tab management
   browserTabList,
+  browserTabNew,
   browserTabSwitch,
+  browserTabClose,
 ];
 
 export async function getBrowserTools(): Promise<FunctionTool[]> {

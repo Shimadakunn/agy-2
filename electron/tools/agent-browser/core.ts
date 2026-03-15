@@ -7,7 +7,13 @@ import { chatTabContext } from "../tab-context";
 export const execFile = promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const localBin = path.resolve(
-  __dirname, "..", "..", "..", "node_modules", ".bin", "agent-browser",
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "node_modules",
+  ".bin",
+  "agent-browser",
 );
 
 let bin = "";
@@ -45,7 +51,9 @@ export async function resolveBin(): Promise<string> {
       return bin;
     } catch {}
   }
-  throw new Error("agent-browser binary not found. Run: pnpm add agent-browser");
+  throw new Error(
+    "agent-browser binary not found. Run: pnpm add agent-browser",
+  );
 }
 
 // ── CDP Detection ──
@@ -54,7 +62,7 @@ export async function detectCdp(): Promise<number | null> {
   if (process.env.BROWSER_CDP_PORT)
     return parseInt(process.env.BROWSER_CDP_PORT, 10);
 
-  for (const port of [9222, 9229, 9333]) {
+  for (const port of [57450]) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
         signal: AbortSignal.timeout(1000),
@@ -65,12 +73,19 @@ export async function detectCdp(): Promise<number | null> {
   return null;
 }
 
-export function getCdpPort() { return cdpPort; }
-export function setCdpPort(port: number | null) { cdpPort = port; }
+export function getCdpPort() {
+  return cdpPort;
+}
+export function setCdpPort(port: number | null) {
+  cdpPort = port;
+}
 
 // ── Command Execution ──
 
-export async function runRaw(args: string[], timeout = 30_000): Promise<string> {
+export async function runRaw(
+  args: string[],
+  timeout = 30_000,
+): Promise<string> {
   const binary = await resolveBin();
   if (!cdpPort) cdpPort = await detectCdp();
 
@@ -88,14 +103,19 @@ export async function runRaw(args: string[], timeout = 30_000): Promise<string> 
 
     if (out && !out.includes("Failed to connect")) return out;
 
-    if (errMsg.includes("Failed to connect") || out.includes("Failed to connect"))
+    if (
+      errMsg.includes("Failed to connect") ||
+      out.includes("Failed to connect")
+    )
       cdpPort = null;
 
-    throw new Error(out || errMsg || (err instanceof Error ? err.message : String(err)));
+    throw new Error(
+      out || errMsg || (err instanceof Error ? err.message : String(err)),
+    );
   }
 }
 
-// ── Per-chat-tab Browser Tab Management via CDP ──
+// ── Per-chat Multi-tab Browser Management via CDP ──
 
 export interface CdpTarget {
   id: string;
@@ -104,8 +124,19 @@ export interface CdpTarget {
   title?: string;
 }
 
-export const tabTargets = new Map<string, string>();
-let lastSwitchedTab: string | null = null;
+// Each chat owns multiple browser tabs
+const chatTabs = new Map<string, string[]>();
+// Which tab the AI is actively working in per chat
+const chatActiveTab = new Map<string, string>();
+let lastSwitchedChat: string | null = null;
+
+export function getChatTabs(): ReadonlyMap<string, string[]> {
+  return chatTabs;
+}
+
+export function getChatActiveTab(): ReadonlyMap<string, string> {
+  return chatActiveTab;
+}
 
 export async function fetchCdpTargets(): Promise<CdpTarget[]> {
   if (!cdpPort) cdpPort = await detectCdp();
@@ -139,40 +170,98 @@ async function closeCdpTargetTab(targetId: string): Promise<void> {
   } catch {}
 }
 
-async function ensureAndSwitchTab(chatTabId: string): Promise<void> {
+/** Prune stale target IDs that no longer exist in the browser */
+async function pruneStaleTargets(
+  chatId: string,
+  targets: CdpTarget[],
+): Promise<void> {
+  const tabs = chatTabs.get(chatId);
+  if (!tabs) return;
+  const liveIds = new Set(targets.map((t) => t.id));
+  const alive = tabs.filter((id) => liveIds.has(id));
+  if (alive.length !== tabs.length) {
+    console.log(
+      `[Browser] pruned ${tabs.length - alive.length} stale targets for chat=${chatId}`,
+    );
+    if (alive.length === 0) chatTabs.delete(chatId);
+    else chatTabs.set(chatId, alive);
+  }
+  const active = chatActiveTab.get(chatId);
+  if (active && !liveIds.has(active)) {
+    chatActiveTab.set(chatId, alive[alive.length - 1] ?? "");
+    if (!alive.length) chatActiveTab.delete(chatId);
+  }
+}
+
+/** Create a new browser tab owned by a chat. Returns the target. */
+export async function createTabForChat(
+  chatId: string,
+  url = "about:blank",
+): Promise<CdpTarget | null> {
+  if (!cdpPort) cdpPort = await detectCdp();
+  if (!cdpPort) return null;
+
+  const target = await createCdpTab(url);
+  if (!target) return null;
+
+  const tabs = chatTabs.get(chatId) ?? [];
+  tabs.push(target.id);
+  chatTabs.set(chatId, tabs);
+  chatActiveTab.set(chatId, target.id);
+  console.log(
+    `[Browser] created tab ${target.id} for chat=${chatId} (total: ${tabs.length})`,
+  );
+  return target;
+}
+
+/** Get info about all browser tabs owned by a chat */
+export async function getChatTabInfo(
+  chatId: string,
+): Promise<(CdpTarget & { active: boolean })[]> {
+  const targets = await fetchCdpTargets();
+  await pruneStaleTargets(chatId, targets);
+
+  const tabs = chatTabs.get(chatId) ?? [];
+  const activeId = chatActiveTab.get(chatId);
+  const tabSet = new Set(tabs);
+
+  return targets
+    .filter((t) => tabSet.has(t.id))
+    .map((t) => ({ ...t, active: t.id === activeId }));
+}
+
+/** Switch the active tab for a chat to a specific target ID */
+export function setActiveChatTab(chatId: string, targetId: string): void {
+  chatActiveTab.set(chatId, targetId);
+  lastSwitchedChat = null; // Force re-switch on next run()
+}
+
+/** Ensure the chat has at least one browser tab and switch to the active one */
+async function ensureAndSwitchChat(chatId: string): Promise<void> {
   if (!cdpPort) return;
 
   try {
-    let targetId = tabTargets.get(chatTabId);
-    let targets = await fetchCdpTargets();
-    console.log(
-      `[Browser] ensureTab: chat=${chatTabId} existing=${targetId ?? "none"} pages=${targets.length}`,
-    );
+    const targets = await fetchCdpTargets();
+    await pruneStaleTargets(chatId, targets);
 
-    if (targetId && !targets.some((t) => t.id === targetId)) {
-      console.log(`[Browser] stale target ${targetId}, clearing`);
-      tabTargets.delete(chatTabId);
-      targetId = undefined;
+    let tabs = chatTabs.get(chatId) ?? [];
+    if (tabs.length === 0) {
+      const newTarget = await createTabForChat(chatId);
+      if (!newTarget) return;
+      tabs = chatTabs.get(chatId) ?? [];
     }
 
-    if (!targetId) {
-      const newTarget = await createCdpTab();
-      if (!newTarget) {
-        console.warn("[Browser] createCdpTab returned null");
-        return;
-      }
-      console.log(`[Browser] created CDP tab ${newTarget.id} (${newTarget.url})`);
-      targetId = newTarget.id;
-      tabTargets.set(chatTabId, targetId);
-      targets = await fetchCdpTargets();
+    const activeId = chatActiveTab.get(chatId) ?? tabs[tabs.length - 1];
+    const index = targets.findIndex((t) => t.id === activeId);
+    if (index >= 0) {
+      console.log(
+        `[Browser] switching to tab index=${index} for chat=${chatId}`,
+      );
+      await runRaw(["tab", String(index)]);
     }
-
-    const index = targets.findIndex((t) => t.id === targetId);
-    console.log(`[Browser] switching to tab index=${index} for chat=${chatTabId}`);
-    if (index >= 0) await runRaw(["tab", String(index)]);
   } catch (err) {
     console.warn(
-      "[Browser] ensureAndSwitchTab failed:",
+      "[Browser] ensureAndSwitchChat failed:",
       err instanceof Error ? err.message : err,
     );
   }
@@ -181,13 +270,10 @@ async function ensureAndSwitchTab(chatTabId: string): Promise<void> {
 export async function run(args: string[], timeout = 30_000): Promise<string> {
   if (!cdpPort) cdpPort = await detectCdp();
 
-  const chatTabId = chatTabContext.getStore();
-  if (chatTabId && cdpPort && chatTabId !== lastSwitchedTab) {
-    console.log(
-      `[Browser] run: switching context to chat=${chatTabId} (was ${lastSwitchedTab})`,
-    );
-    await ensureAndSwitchTab(chatTabId);
-    lastSwitchedTab = chatTabId;
+  const chatId = chatTabContext.getStore();
+  if (chatId && cdpPort && chatId !== lastSwitchedChat) {
+    await ensureAndSwitchChat(chatId);
+    lastSwitchedChat = chatId;
   }
 
   return runRaw(args, timeout);
@@ -204,7 +290,10 @@ export async function openUrlInTab(url: string): Promise<void> {
       console.log(`[Browser] opened ${url} in tab`);
       return;
     } catch (err) {
-      console.warn("[Browser] tab-aware open failed:", err instanceof Error ? err.message : err);
+      console.warn(
+        "[Browser] tab-aware open failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
 
     try {
@@ -212,7 +301,10 @@ export async function openUrlInTab(url: string): Promise<void> {
       console.log(`[Browser] opened ${url} (raw fallback)`);
       return;
     } catch (err) {
-      console.warn("[Browser] raw open failed:", err instanceof Error ? err.message : err);
+      console.warn(
+        "[Browser] raw open failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
@@ -220,16 +312,25 @@ export async function openUrlInTab(url: string): Promise<void> {
     await execFile("open", [url], { timeout: 5000 });
     console.log(`[Browser] opened ${url} in system browser`);
   } catch (err) {
-    console.warn("[Browser] system open failed:", err instanceof Error ? err.message : err);
+    console.warn(
+      "[Browser] system open failed:",
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
-export async function cleanupBrowserTab(chatTabId: string): Promise<void> {
-  const targetId = tabTargets.get(chatTabId);
-  if (!targetId) return;
-  tabTargets.delete(chatTabId);
-  if (lastSwitchedTab === chatTabId) lastSwitchedTab = null;
-  if (cdpPort) await closeCdpTargetTab(targetId);
+/** Close ALL browser tabs owned by a chat */
+export async function cleanupChatTabs(chatId: string): Promise<void> {
+  const tabs = chatTabs.get(chatId);
+  if (!tabs?.length) return;
+
+  chatTabs.delete(chatId);
+  chatActiveTab.delete(chatId);
+  if (lastSwitchedChat === chatId) lastSwitchedChat = null;
+
+  if (cdpPort) {
+    for (const targetId of tabs) await closeCdpTargetTab(targetId);
+  }
 }
 
 export async function closeBrowserToolset(): Promise<void> {

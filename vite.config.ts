@@ -20,7 +20,14 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['bufferutil', 'utf-8-validate'],
+              external: (id: string) => {
+                if (id.startsWith('node:')) return true;
+                if (id.includes('node_modules')) return true;
+                // Also externalize bare specifiers (npm packages)
+                if (!id.startsWith('.') && !id.startsWith('/') && !id.startsWith('\0'))
+                  return true;
+                return false;
+              },
             },
           },
         },

@@ -18,7 +18,8 @@ import {
   getBrowserTools,
   closeBrowserToolset,
   isBrowserConnected,
-  cleanupBrowserTab,
+  cleanupChatTabs,
+  getChatTabInfo,
 } from "./tools/agent-browser";
 import { chatTabContext } from "./tools/tab-context";
 import {
@@ -26,7 +27,15 @@ import {
   startOAuthFlow,
   disconnect,
   isConnected,
+  getUserEmail,
 } from "./auth";
+import {
+  saveMessage,
+  saveConversation,
+  loadMessages,
+  loadConversations,
+  deleteConversation,
+} from "./db";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,7 +68,14 @@ IMPORTANT: For ANY Google Workspace operation (email, calendar, drive, docs, she
 
 If you don't know the exact gws command syntax, use "gws_schema" first to look up the method and its parameters.
 
-Only use browser tools for non-Google websites or when the user explicitly asks you to interact with a webpage.`;
+Only use browser tools for non-Google websites or when the user explicitly asks you to interact with a webpage.
+
+BROWSER TABS: Each chat has its own dedicated browser tabs. You can manage multiple tabs per chat:
+- browser_tab_list: See your current tabs
+- browser_tab_new: Open a new tab (added to your chat's tab pool)
+- browser_tab_switch: Switch between your tabs
+- browser_tab_close: Close a tab
+Your commands (click, fill, snapshot, etc.) always target the active tab. Use browser_tab_new for multi-tab workflows.`;
 
 let runner: InMemoryRunner | null = null;
 const sessionIds = new Map<string, string>();
@@ -154,13 +170,25 @@ function createWindow() {
     },
   });
   win.setContentProtection(true);
-  // Forward bot messages to the renderer
+  // Forward bot messages to the renderer + persist to Firestore
   localAdapter.events.on("bot-message", (data) => {
     win?.webContents.send("chat:bot-message", data);
+    saveMessage(data.tabId, {
+      id: data.id,
+      text: data.text,
+      author: "bot",
+      timestamp: data.timestamp,
+    }).catch(() => {});
   });
 
   localAdapter.events.on("bot-edit", (data) => {
     win?.webContents.send("chat:bot-edit", data);
+    saveMessage(data.tabId, {
+      id: data.id,
+      text: data.text,
+      author: "bot",
+      timestamp: data.timestamp,
+    }).catch(() => {});
   });
 
   localAdapter.events.on("bot-typing", (data) => {
@@ -170,6 +198,15 @@ function createWindow() {
   // Handle user messages from the renderer
   ipcMain.on("chat:user-message", (_event, tabId: string, text: string, files?: AttachedFile[]) => {
     localAdapter.injectUserMessage(tabId, text, files);
+    // Persist user message to Firestore (fire-and-forget)
+    const filesMeta = files?.map(({ name, mimeType }) => ({ name, mimeType }));
+    saveMessage(tabId, {
+      id: `user_${Date.now()}`,
+      text,
+      author: "user",
+      timestamp: Date.now(),
+      files: filesMeta,
+    }).catch(() => {});
   });
 
   // Pin window (always on top)
@@ -181,10 +218,27 @@ function createWindow() {
   // Browser CDP connection status
   ipcMain.handle("browser:extension-status", () => isBrowserConnected());
 
-  // Tab lifecycle — clean up browser tab + agent session
+  // Tab lifecycle — clean up browser tabs + agent session
   ipcMain.on("chat:close-tab", (_event, tabId: string) => {
     sessionIds.delete(tabId);
-    cleanupBrowserTab(tabId);
+    cleanupChatTabs(tabId);
+    deleteConversation(tabId).catch(() => {});
+  });
+
+  // Save conversation metadata when a tab is created/renamed
+  ipcMain.on("chat:save-conversation", (_event, tabId: string, label: string) => {
+    saveConversation(tabId, label).catch(() => {});
+  });
+
+  // Cloud database — load persisted conversations and messages
+  ipcMain.handle("db:load-conversations", () => loadConversations());
+  ipcMain.handle("db:load-messages", (_event, tabId: string) => loadMessages(tabId));
+  ipcMain.handle("db:get-user-email", () => getUserEmail());
+
+  // Browser tab info per chat (for UI display)
+  ipcMain.handle("browser:chat-tabs", async (_event, chatId: string) => {
+    const tabs = await getChatTabInfo(chatId);
+    return tabs.map((t, i) => ({ index: i, url: t.url, title: t.title || "", active: t.active }));
   });
 
   // Google OAuth

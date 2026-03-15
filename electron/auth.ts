@@ -27,6 +27,10 @@ const SCOPES = [
   // Meet — create and manage meetings
   "https://www.googleapis.com/auth/meetings.space.created",
   "https://www.googleapis.com/auth/meetings.space.readonly",
+  // Firestore — cloud database for message persistence
+  "https://www.googleapis.com/auth/datastore",
+  // User identity
+  "https://www.googleapis.com/auth/userinfo.email",
 ];
 
 const REDIRECT_PORT = 18023;
@@ -149,7 +153,23 @@ export function startOAuthFlow(): Promise<boolean> {
   });
 }
 
+let cachedEmail: string | null = null;
+
+export async function getUserEmail(): Promise<string | null> {
+  if (cachedEmail) return cachedEmail;
+  if (!isConnected()) return null;
+  try {
+    const oauth2 = google.oauth2({ version: "v2", auth: getClient() });
+    const { data } = await oauth2.userinfo.get();
+    cachedEmail = data.email ?? null;
+    return cachedEmail;
+  } catch {
+    return null;
+  }
+}
+
 export function disconnect(): void {
+  cachedEmail = null;
   const client = getClient();
   client.revokeCredentials().catch(() => {});
   client.setCredentials({});

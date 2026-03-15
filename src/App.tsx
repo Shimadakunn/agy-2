@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Mic, Paperclip } from "lucide-react";
+import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Mic, Paperclip, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -46,6 +46,11 @@ declare global {
       onAuthChanged: (cb: (connected: boolean) => void) => () => void;
       requestMicPermission: () => Promise<boolean>;
       transcribeAudio: (audioBase64: string, mimeType: string) => Promise<{ text?: string; error?: string }>;
+      loadConversations: () => Promise<{ id: string; label: string; createdAt: number; updatedAt: number; browserTabs?: { url: string; title: string }[] }[]>;
+      loadMessages: (tabId: string) => Promise<{ id: string; text: string; author: "user" | "bot"; timestamp: number; files?: { name: string; mimeType: string }[] }[]>;
+      saveConversation: (tabId: string, label: string) => void;
+      getUserEmail: () => Promise<string | null>;
+      getChatBrowserTabs: (chatId: string) => Promise<{ index: number; url: string; title: string; active: boolean }[]>;
     };
   }
 }
@@ -70,20 +75,87 @@ function renderMarkdown(text: string) {
   });
 }
 
-function TabBar({ tabs, activeId, pinned, connected, onSelect, onClose, onNew, onTogglePin, onToggleConnect }: {
+interface SavedChat {
+  id: string;
+  label: string;
+  createdAt: number;
+  updatedAt: number;
+  browserTabs?: { url: string; title: string }[];
+}
+
+function formatDate(ts: number) {
+  const d = new Date(ts);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString())
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function HistoryPanel({ chats, openIds, onSelect }: {
+  chats: SavedChat[];
+  openIds: Set<string>;
+  onSelect: (chat: SavedChat) => void;
+}) {
+  if (chats.length === 0)
+    return (
+      <div className="absolute right-1 top-full mt-1 z-50 w-64 bg-card border border-border rounded-lg shadow-xl p-3">
+        <p className="text-xs text-muted-foreground text-center">No saved chats</p>
+      </div>
+    );
+
+  return (
+    <div className="absolute right-1 top-full mt-1 z-50 w-64 bg-card border border-border rounded-lg shadow-xl overflow-hidden">
+      <div className="px-3 py-2 border-b border-border">
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Chat History</span>
+      </div>
+      <div className="max-h-64 overflow-y-auto">
+        {chats.map((chat) => (
+          <button
+            key={chat.id}
+            onClick={() => onSelect(chat)}
+            disabled={openIds.has(chat.id)}
+            className={`w-full text-left px-3 py-2 text-xs transition-colors cursor-default ${
+              openIds.has(chat.id)
+                ? "text-muted-foreground/50 bg-secondary/30"
+                : "text-foreground hover:bg-secondary/50"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-medium">{chat.label}</span>
+              <span className="text-[10px] text-muted-foreground shrink-0">{formatDate(chat.updatedAt)}</span>
+            </div>
+            {chat.browserTabs && chat.browserTabs.length > 0 && (
+              <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                {chat.browserTabs.length} tab{chat.browserTabs.length > 1 ? "s" : ""}
+              </div>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TabBar({ tabs, activeId, pinned, connected, savedChats, onSelect, onClose, onNew, onTogglePin, onToggleConnect, onLoadChat, onRefreshHistory }: {
   tabs: Tab[];
   activeId: string;
   pinned: boolean;
   connected: boolean;
+  savedChats: SavedChat[];
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
   onTogglePin: () => void;
   onToggleConnect: () => void;
+  onLoadChat: (chat: SavedChat) => void;
+  onRefreshHistory: () => void;
 }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const openIds = new Set(tabs.map((t) => t.id));
+
   return (
     <div
-      className="flex items-end h-10 bg-background pl-[78px] pr-1.5 gap-px shrink-0 select-none"
+      className="relative flex items-end h-10 bg-background pl-[78px] pr-1.5 gap-px shrink-0 select-none"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       {tabs.map((tab) => (
@@ -131,6 +203,24 @@ function TabBar({ tabs, activeId, pinned, connected, onSelect, onClose, onNew, o
           <Button
             variant="ghost"
             size="icon-xs"
+            onClick={() => {
+              if (!showHistory) onRefreshHistory();
+              setShowHistory(!showHistory);
+            }}
+            className={`mb-1 cursor-default ${showHistory ? "text-primary" : "text-muted-foreground"}`}
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <History size={13} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Chat history</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger render={<div />}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={onToggleConnect}
             className={`mb-1 cursor-default ${connected ? "text-green-400" : "text-muted-foreground"}`}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -155,6 +245,14 @@ function TabBar({ tabs, activeId, pinned, connected, onSelect, onClose, onNew, o
         </TooltipTrigger>
         <TooltipContent side="bottom">{pinned ? "Unpin window" : "Pin on top"}</TooltipContent>
       </Tooltip>
+
+      {showHistory && (
+        <HistoryPanel
+          chats={savedChats}
+          openIds={openIds}
+          onSelect={(chat) => { onLoadChat(chat); setShowHistory(false); }}
+        />
+      )}
     </div>
   );
 }
@@ -330,6 +428,10 @@ function App() {
   const [input, setInput] = useState("");
   const [isTypingByTab, setIsTypingByTab] = useState<Record<string, boolean>>({});
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileData[]>([]);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [savedChats, setSavedChats] = useState<SavedChat[]>([]);
+  const loadedTabsRef = useRef<Set<string>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -378,11 +480,72 @@ function App() {
     setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  useEffect(() => {
-    window.chatBridge.getAuthStatus().then(setConnected);
-    const offAuth = window.chatBridge.onAuthChanged(setConnected);
-    return offAuth;
+  // Restore conversations from Firestore when connected
+  const restoreConversations = useCallback(async () => {
+    const convs = await window.chatBridge.loadConversations();
+    if (convs.length === 0) return;
+
+    const sorted = convs.sort((a, b) => a.createdAt - b.createdAt);
+    const restoredTabs = sorted.map((c) => ({ id: c.id, label: c.label }));
+    const restoredMessages: Record<string, ChatMessage[]> = {};
+
+    // Pre-initialize empty arrays
+    for (const tab of restoredTabs)
+      restoredMessages[tab.id] = [];
+
+    // Update counter to avoid ID conflicts
+    const maxNum = sorted.reduce((max, c) => {
+      const n = parseInt(c.id.replace("tab-", ""), 10);
+      return isNaN(n) ? max : Math.max(max, n);
+    }, tabCounter);
+    tabCounter = maxNum;
+
+    setTabs(restoredTabs);
+    setActiveTab(restoredTabs[0].id);
+    setMessagesByTab(restoredMessages);
+    loadedTabsRef.current.clear();
   }, []);
+
+  useEffect(() => {
+    window.chatBridge.getAuthStatus().then(async (status) => {
+      setConnected(status);
+      if (status) {
+        window.chatBridge.getUserEmail().then(setUserEmail);
+        await restoreConversations();
+      }
+    });
+    const offAuth = window.chatBridge.onAuthChanged((status) => {
+      setConnected(status);
+      if (status) {
+        window.chatBridge.getUserEmail().then(setUserEmail);
+        restoreConversations();
+      } else {
+        setUserEmail(null);
+      }
+    });
+    return offAuth;
+  }, [restoreConversations]);
+
+  // Load messages for the active tab from Firestore (once per tab)
+  useEffect(() => {
+    if (!connected || loadedTabsRef.current.has(activeTab)) return;
+    loadedTabsRef.current.add(activeTab);
+
+    setLoadingHistory(true);
+    window.chatBridge.loadMessages(activeTab).then((msgs) => {
+      if (msgs.length > 0) {
+        setMessagesByTab((prev) => {
+          const existing = prev[activeTab] ?? [];
+          // Merge: use Firestore messages as base, skip duplicates from local
+          const existingIds = new Set(existing.map((m) => m.id));
+          const merged = [...msgs.filter((m) => !existingIds.has(m.id)), ...existing];
+          merged.sort((a, b) => a.timestamp - b.timestamp);
+          return { ...prev, [activeTab]: merged };
+        });
+      }
+      setLoadingHistory(false);
+    }).catch(() => setLoadingHistory(false));
+  }, [activeTab, connected]);
 
   useEffect(() => {
     const offMessage = window.chatBridge.onBotMessage((data) => {
@@ -430,8 +593,43 @@ function App() {
     setAttachedFiles([]);
     setIsTypingByTab((prev) => ({ ...prev, [tabId]: true }));
     window.chatBridge.sendMessage(tabId, text, files);
+    // Ensure conversation exists in Firestore
+    const tab = tabs.find((t) => t.id === tabId);
+    if (tab) window.chatBridge.saveConversation(tabId, tab.label);
     inputRef.current?.focus();
-  }, [input, activeTab, attachedFiles]);
+  }, [input, activeTab, attachedFiles, tabs]);
+
+  const handleRefreshHistory = useCallback(() => {
+    if (!connected) return;
+    window.chatBridge.loadConversations().then((convs) => {
+      setSavedChats(convs.sort((a, b) => b.updatedAt - a.updatedAt));
+    });
+  }, [connected]);
+
+  const handleLoadChat = useCallback((chat: SavedChat) => {
+    // If this chat is already open in a tab, just switch to it
+    const existingTab = tabs.find((t) => t.id === chat.id);
+    if (existingTab) {
+      setActiveTab(chat.id);
+      return;
+    }
+
+    // Replace the active tab's identity with the loaded chat
+    const oldId = activeTab;
+    setTabs((prev) => prev.map((t) =>
+      t.id === oldId ? { id: chat.id, label: chat.label } : t
+    ));
+    setMessagesByTab((prev) => {
+      const { [oldId]: _, ...rest } = prev;
+      return { ...rest, [chat.id]: [] };
+    });
+    setIsTypingByTab((prev) => {
+      const { [oldId]: _, ...rest } = prev;
+      return rest;
+    });
+    loadedTabsRef.current.delete(chat.id);
+    setActiveTab(chat.id);
+  }, [activeTab, tabs]);
 
   const handleTogglePin = useCallback(async () => {
     const next = !pinned;
@@ -449,9 +647,11 @@ function App() {
   const handleNewTab = useCallback(() => {
     tabCounter++;
     const id = `tab-${tabCounter}`;
-    setTabs((prev) => [...prev, { id, label: `Chat ${tabCounter}` }]);
+    const label = `Chat ${tabCounter}`;
+    setTabs((prev) => [...prev, { id, label }]);
     setMessagesByTab((prev) => ({ ...prev, [id]: [] }));
     setActiveTab(id);
+    window.chatBridge.saveConversation(id, label);
   }, []);
 
   const handleCloseTab = useCallback((id: string) => {
@@ -484,18 +684,28 @@ function App() {
           activeId={activeTab}
           pinned={pinned}
           connected={connected}
+          savedChats={savedChats}
           onSelect={setActiveTab}
           onClose={handleCloseTab}
           onNew={handleNewTab}
           onTogglePin={handleTogglePin}
           onToggleConnect={handleToggleConnect}
+          onLoadChat={handleLoadChat}
+          onRefreshHistory={handleRefreshHistory}
         />
 
         <ScrollArea className="flex-1 min-h-0">
           <div className="flex flex-col gap-2 px-4 py-3 min-h-full">
-            {messages.length === 0 && (
+            {loadingHistory && (
+              <div className="flex items-center justify-center py-6 opacity-40">
+                <p className="text-xs text-muted-foreground">Loading history...</p>
+              </div>
+            )}
+
+            {!loadingHistory && messages.length === 0 && (
               <div className="flex flex-col items-center justify-center flex-1 min-h-[200px] gap-1 opacity-40">
                 <p className="text-sm text-muted-foreground">New conversation</p>
+                {userEmail && <p className="text-[11px] text-muted-foreground">{userEmail}</p>}
               </div>
             )}
 
