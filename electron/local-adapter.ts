@@ -25,6 +25,12 @@ interface LocalRawMessage {
   timestamp: number;
 }
 
+export interface AttachedFile {
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
 function extractText(message: AdapterPostableMessage): string {
   if (typeof message === "string") return message;
   if ("markdown" in message) return message.markdown;
@@ -41,8 +47,15 @@ class LocalFormatConverter extends BaseFormatConverter {
   }
 }
 
-const THREAD_ID = "local:main";
 const CHANNEL_ID = "local:main";
+
+function threadIdForTab(tabId: string): string {
+  return `local:${tabId}`;
+}
+
+function tabIdFromThread(threadId: string): string {
+  return threadId.split(":")[1] || "tab-1";
+}
 
 export class LocalAdapter implements Adapter<LocalThreadId, LocalRawMessage> {
   readonly name = "local";
@@ -53,6 +66,7 @@ export class LocalAdapter implements Adapter<LocalThreadId, LocalRawMessage> {
   private converter = new LocalFormatConverter();
   private messages: LocalRawMessage[] = [];
   private msgCounter = 0;
+  private pendingFiles = new Map<string, AttachedFile[]>();
 
   readonly events = new EventEmitter();
 
@@ -82,10 +96,10 @@ export class LocalAdapter implements Adapter<LocalThreadId, LocalRawMessage> {
     return new Response("OK", { status: 200 });
   }
 
-  parseMessage(raw: LocalRawMessage): Message<LocalRawMessage> {
+  parseMessage(raw: LocalRawMessage, threadId = "local:main"): Message<LocalRawMessage> {
     return new Message({
       id: raw.id,
-      threadId: THREAD_ID,
+      threadId,
       text: raw.text,
       formatted: this.converter.toAst(raw.text),
       raw,
@@ -104,19 +118,21 @@ export class LocalAdapter implements Adapter<LocalThreadId, LocalRawMessage> {
     });
   }
 
-  async postMessage(_threadId: string, message: AdapterPostableMessage): Promise<RawMessage<LocalRawMessage>> {
+  async postMessage(threadId: string, message: AdapterPostableMessage): Promise<RawMessage<LocalRawMessage>> {
     const id = `msg_${++this.msgCounter}`;
     const text = extractText(message);
+    const tabId = tabIdFromThread(threadId);
 
     const raw: LocalRawMessage = { id, text, author: "bot", timestamp: Date.now() };
     this.messages.push(raw);
-    this.events.emit("bot-message", { id, text, timestamp: raw.timestamp });
+    this.events.emit("bot-message", { id, text, timestamp: raw.timestamp, tabId });
 
-    return { raw, id, threadId: THREAD_ID };
+    return { raw, id, threadId };
   }
 
-  async editMessage(_threadId: string, messageId: string, message: AdapterPostableMessage): Promise<RawMessage<LocalRawMessage>> {
+  async editMessage(threadId: string, messageId: string, message: AdapterPostableMessage): Promise<RawMessage<LocalRawMessage>> {
     const text = extractText(message);
+    const tabId = tabIdFromThread(threadId);
     const existing = this.messages.find((m) => m.id === messageId);
     if (existing) {
       existing.text = text;
@@ -124,9 +140,9 @@ export class LocalAdapter implements Adapter<LocalThreadId, LocalRawMessage> {
     }
 
     const raw: LocalRawMessage = existing ?? { id: messageId, text, author: "bot", timestamp: Date.now() };
-    this.events.emit("bot-edit", { id: messageId, text, timestamp: raw.timestamp });
+    this.events.emit("bot-edit", { id: messageId, text, timestamp: raw.timestamp, tabId });
 
-    return { raw, id: messageId, threadId: THREAD_ID };
+    return { raw, id: messageId, threadId };
   }
 
   async deleteMessage(_threadId: string, messageId: string): Promise<void> {
@@ -137,35 +153,43 @@ export class LocalAdapter implements Adapter<LocalThreadId, LocalRawMessage> {
   async addReaction(_threadId: string, _messageId: string, _emoji: EmojiValue | string): Promise<void> {}
   async removeReaction(_threadId: string, _messageId: string, _emoji: EmojiValue | string): Promise<void> {}
 
-  async fetchMessages(_threadId: string, _options?: FetchOptions): Promise<FetchResult<LocalRawMessage>> {
-    return { messages: this.messages.map((m) => this.parseMessage(m)), nextCursor: undefined };
+  async fetchMessages(threadId: string, _options?: FetchOptions): Promise<FetchResult<LocalRawMessage>> {
+    return { messages: this.messages.map((m) => this.parseMessage(m, threadId)), nextCursor: undefined };
   }
 
   async fetchThread(threadId: string): Promise<ThreadInfo> {
     return { id: threadId, channelId: CHANNEL_ID, metadata: {} };
   }
 
-  async startTyping(_threadId: string): Promise<void> {
-    this.events.emit("bot-typing");
+  async startTyping(threadId: string): Promise<void> {
+    this.events.emit("bot-typing", { tabId: tabIdFromThread(threadId) });
   }
 
   renderFormatted(content: Root): string {
     return this.converter.fromAst(content);
   }
 
-  async injectUserMessage(text: string): Promise<void> {
+  consumeFiles(messageId: string): AttachedFile[] | undefined {
+    const files = this.pendingFiles.get(messageId);
+    if (files) this.pendingFiles.delete(messageId);
+    return files;
+  }
+
+  async injectUserMessage(tabId: string, text: string, files?: AttachedFile[]): Promise<void> {
     if (!this.chat) return;
 
+    const threadId = threadIdForTab(tabId);
     const id = `user_${++this.msgCounter}`;
     const raw: LocalRawMessage = { id, text, author: "user", timestamp: Date.now() };
     this.messages.push(raw);
+    if (files?.length) this.pendingFiles.set(id, files);
 
     const factory = async () => {
-      const msg = this.parseMessage(raw);
+      const msg = this.parseMessage(raw, threadId);
       msg.isMention = true;
       return msg;
     };
 
-    this.chat.processMessage(this, THREAD_ID, factory);
+    this.chat.processMessage(this, threadId, factory);
   }
 }

@@ -11,7 +11,7 @@ import {
   stringifyContent,
 } from "@google/adk";
 import { GoogleGenAI } from "@google/genai";
-import { LocalAdapter } from "./local-adapter";
+import { LocalAdapter, type AttachedFile } from "./local-adapter";
 import { gwsTools } from "./tools/gws";
 import { computerTools } from "./tools/computer";
 import {
@@ -69,7 +69,12 @@ async function initAgent(): Promise<void> {
   runner = new InMemoryRunner({ agent, appName: "agy" });
 }
 
-async function askAgent(userId: string, text: string): Promise<string> {
+function isTextMimeType(mime: string): boolean {
+  if (mime.startsWith("text/")) return true;
+  return ["application/json", "application/xml", "application/javascript", "application/x-yaml", "application/yaml", "application/toml"].includes(mime);
+}
+
+async function askAgent(userId: string, text: string, files?: AttachedFile[]): Promise<string> {
   if (!runner) return "Agent not initialized yet. Please wait a moment.";
 
   let sessionId = sessionIds.get(userId);
@@ -82,30 +87,46 @@ async function askAgent(userId: string, text: string): Promise<string> {
     sessionIds.set(userId, sessionId);
   }
 
-  const parts: string[] = [];
+  const messageParts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [];
+  if (files?.length) {
+    for (const file of files) {
+      if (isTextMimeType(file.mimeType))
+        messageParts.push({ text: `[File: ${file.name}]\n${Buffer.from(file.data, "base64").toString("utf-8")}` });
+      else
+        messageParts.push({ inlineData: { mimeType: file.mimeType, data: file.data } });
+    }
+  }
+  if (text) messageParts.push({ text });
+  if (messageParts.length === 0) messageParts.push({ text: "" });
+
+  const responseParts: string[] = [];
   for await (const event of runner.runAsync({
     userId,
     sessionId,
-    newMessage: { role: "user", parts: [{ text }] },
+    newMessage: { role: "user", parts: messageParts },
   })) {
     if (isFinalResponse(event)) {
       const content = stringifyContent(event);
-      if (content) parts.push(content);
+      if (content) responseParts.push(content);
     }
   }
 
-  return parts.join("") || "Sorry, I couldn't generate a response.";
+  return responseParts.join("") || "Sorry, I couldn't generate a response.";
 }
 
 bot.onNewMention(async (thread, message) => {
   await thread.subscribe();
-  const response = await askAgent("default", message.text);
+  const tabId = thread.id.split(":")[1] || "tab-1";
+  const files = localAdapter.consumeFiles(message.id);
+  const response = await askAgent(tabId, message.text, files);
   await thread.post(response);
 });
 
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.author.isBot) return;
-  const response = await askAgent("default", message.text);
+  const tabId = thread.id.split(":")[1] || "tab-1";
+  const files = localAdapter.consumeFiles(message.id);
+  const response = await askAgent(tabId, message.text, files);
   await thread.post(response);
 });
 
@@ -132,13 +153,13 @@ function createWindow() {
     win?.webContents.send("chat:bot-edit", data);
   });
 
-  localAdapter.events.on("bot-typing", () => {
-    win?.webContents.send("chat:bot-typing");
+  localAdapter.events.on("bot-typing", (data) => {
+    win?.webContents.send("chat:bot-typing", data);
   });
 
   // Handle user messages from the renderer
-  ipcMain.on("chat:user-message", (_event, text: string) => {
-    localAdapter.injectUserMessage(text);
+  ipcMain.on("chat:user-message", (_event, tabId: string, text: string, files?: AttachedFile[]) => {
+    localAdapter.injectUserMessage(tabId, text, files);
   });
 
   // Pin window (always on top)

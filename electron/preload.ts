@@ -20,20 +20,21 @@ contextBridge.exposeInMainWorld("ipcRenderer", {
 });
 
 contextBridge.exposeInMainWorld("chatBridge", {
-  sendMessage: (text: string) => ipcRenderer.send("chat:user-message", text),
+  sendMessage: (tabId: string, text: string, files?: { name: string; mimeType: string; data: string }[]) =>
+    ipcRenderer.send("chat:user-message", tabId, text, files),
   setPinned: (pinned: boolean) => ipcRenderer.invoke("window:set-pinned", pinned),
-  onBotMessage: (callback: (data: { id: string; text: string; timestamp: number }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { id: string; text: string; timestamp: number }) => callback(data);
+  onBotMessage: (callback: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { id: string; text: string; timestamp: number; tabId: string }) => callback(data);
     ipcRenderer.on("chat:bot-message", handler);
     return () => ipcRenderer.off("chat:bot-message", handler);
   },
-  onBotEdit: (callback: (data: { id: string; text: string; timestamp: number }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { id: string; text: string; timestamp: number }) => callback(data);
+  onBotEdit: (callback: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { id: string; text: string; timestamp: number; tabId: string }) => callback(data);
     ipcRenderer.on("chat:bot-edit", handler);
     return () => ipcRenderer.off("chat:bot-edit", handler);
   },
-  onBotTyping: (callback: () => void) => {
-    const handler = () => callback();
+  onBotTyping: (callback: (data: { tabId: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { tabId: string }) => callback(data);
     ipcRenderer.on("chat:bot-typing", handler);
     return () => ipcRenderer.off("chat:bot-typing", handler);
   },

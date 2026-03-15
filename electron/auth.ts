@@ -7,11 +7,26 @@ import path from "node:path";
 import { app } from "electron";
 
 const SCOPES = [
-  "https://www.googleapis.com/auth/gmail.compose",
-  "https://www.googleapis.com/auth/gmail.readonly",
+  // Gmail — full access (read, send, delete, manage)
+  "https://mail.google.com/",
+  // Calendar — full access
   "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/spreadsheets.readonly",
+  // Drive — full access (read, write, delete)
+  "https://www.googleapis.com/auth/drive",
+  // Sheets — full access
+  "https://www.googleapis.com/auth/spreadsheets",
+  // Docs — full access
+  "https://www.googleapis.com/auth/documents",
+  // Slides — full access
+  "https://www.googleapis.com/auth/presentations",
+  // Tasks — full access
+  "https://www.googleapis.com/auth/tasks",
+  // Forms — full access
+  "https://www.googleapis.com/auth/forms.body",
+  "https://www.googleapis.com/auth/forms.responses.readonly",
+  // Meet — create and manage meetings
+  "https://www.googleapis.com/auth/meetings.space.created",
+  "https://www.googleapis.com/auth/meetings.space.readonly",
 ];
 
 const REDIRECT_PORT = 18023;

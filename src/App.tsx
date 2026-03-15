@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
-import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Mic } from "lucide-react";
+import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Mic, Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,6 +16,13 @@ interface ChatMessage {
   text: string;
   author: "user" | "bot";
   timestamp: number;
+  files?: { name: string; mimeType: string }[];
+}
+
+interface AttachedFileData {
+  name: string;
+  mimeType: string;
+  data: string;
 }
 
 interface Tab {
@@ -26,11 +33,11 @@ interface Tab {
 declare global {
   interface Window {
     chatBridge: {
-      sendMessage: (text: string) => void;
+      sendMessage: (tabId: string, text: string, files?: AttachedFileData[]) => void;
       setPinned: (pinned: boolean) => Promise<boolean>;
-      onBotMessage: (cb: (data: { id: string; text: string; timestamp: number }) => void) => () => void;
-      onBotEdit: (cb: (data: { id: string; text: string; timestamp: number }) => void) => () => void;
-      onBotTyping: (cb: () => void) => () => void;
+      onBotMessage: (cb: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => () => void;
+      onBotEdit: (cb: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => () => void;
+      onBotTyping: (cb: (data: { tabId: string }) => void) => () => void;
       getAuthStatus: () => Promise<boolean>;
       connect: () => Promise<boolean>;
       disconnect: () => Promise<void>;
@@ -159,6 +166,7 @@ function TypingIndicator() {
 
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.author === "user";
+  const sanitizedHtml = msg.text ? renderMarkdown(msg.text) : "";
 
   return (
     <div className={`flex gap-2 max-w-[85%] animate-fade-in ${isUser ? "self-end flex-row-reverse" : "self-start"}`}>
@@ -169,10 +177,22 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
             : "bg-card border border-border text-foreground rounded-bl-sm"
         }`}
       >
-        <div
-          className="break-words [&_strong]:font-semibold"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }}
-        />
+        {msg.files && msg.files.length > 0 && (
+          <div className={`flex flex-wrap gap-1 ${msg.text ? "mb-1.5" : ""}`}>
+            {msg.files.map((f, i) => (
+              <span key={i} className={`inline-flex items-center gap-1 text-[11px] rounded px-1.5 py-0.5 ${isUser ? "bg-white/15" : "bg-secondary"}`}>
+                <Paperclip size={10} />
+                <span className="truncate max-w-32">{f.name}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {sanitizedHtml && (
+          <div
+            className="break-words [&_strong]:font-semibold"
+            dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+          />
+        )}
         <time className={`block text-[10px] mt-1 ${isUser ? "text-right text-primary-foreground/40" : "text-muted-foreground"}`}>
           {formatTime(msg.timestamp)}
         </time>
@@ -295,30 +315,55 @@ function App() {
   const [pinned, setPinned] = useState(false);
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [isTypingByTab, setIsTypingByTab] = useState<Record<string, boolean>>({});
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFileData[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const typingTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const typingTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const messages = messagesByTab[activeTab] ?? [];
+  const isTyping = isTypingByTab[activeTab] ?? false;
 
   // Push-to-talk: hold Control to speak, release to send
   const handleVoiceResult = useCallback(
     (text: string) => {
+      const tabId = activeTab;
       setMessagesByTab((prev) => ({
         ...prev,
-        [activeTab]: [
-          ...(prev[activeTab] ?? []),
+        [tabId]: [
+          ...(prev[tabId] ?? []),
           { id: `local_${Date.now()}`, text, author: "user", timestamp: Date.now() },
         ],
       }));
-      setIsTyping(true);
-      window.chatBridge.sendMessage(text);
+      setIsTypingByTab((prev) => ({ ...prev, [tabId]: true }));
+      window.chatBridge.sendMessage(tabId, text);
     },
     [activeTab]
   );
 
   const { isListening, isTranscribing } = usePushToTalk(handleVoiceResult);
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    Promise.all(
+      files.map((file) =>
+        new Promise<AttachedFileData>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(",")[1];
+            resolve({ name: file.name, mimeType: file.type || "application/octet-stream", data: base64 });
+          };
+          reader.readAsDataURL(file);
+        })
+      )
+    ).then((results) => setAttachedFiles((prev) => [...prev, ...results]));
+    e.target.value = "";
+  }, []);
+
+  const handleRemoveFile = useCallback((index: number) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
 
   useEffect(() => {
     window.chatBridge.getAuthStatus().then(setConnected);
@@ -328,28 +373,30 @@ function App() {
 
   useEffect(() => {
     const offMessage = window.chatBridge.onBotMessage((data) => {
-      setIsTyping(false);
+      setIsTypingByTab((prev) => ({ ...prev, [data.tabId]: false }));
       setMessagesByTab((prev) => {
-        const tabMsgs = prev[activeTab] ?? [];
-        return { ...prev, [activeTab]: [...tabMsgs, { id: data.id, text: data.text, author: "bot", timestamp: data.timestamp }] };
+        const tabMsgs = prev[data.tabId] ?? [];
+        return { ...prev, [data.tabId]: [...tabMsgs, { id: data.id, text: data.text, author: "bot", timestamp: data.timestamp }] };
       });
     });
 
     const offEdit = window.chatBridge.onBotEdit((data) => {
       setMessagesByTab((prev) => {
-        const tabMsgs = prev[activeTab] ?? [];
-        return { ...prev, [activeTab]: tabMsgs.map((m) => (m.id === data.id ? { ...m, text: data.text, timestamp: data.timestamp } : m)) };
+        const tabMsgs = prev[data.tabId] ?? [];
+        return { ...prev, [data.tabId]: tabMsgs.map((m) => (m.id === data.id ? { ...m, text: data.text, timestamp: data.timestamp } : m)) };
       });
     });
 
-    const offTyping = window.chatBridge.onBotTyping(() => {
-      setIsTyping(true);
-      clearTimeout(typingTimeout.current);
-      typingTimeout.current = setTimeout(() => setIsTyping(false), 3000);
+    const offTyping = window.chatBridge.onBotTyping((data) => {
+      setIsTypingByTab((prev) => ({ ...prev, [data.tabId]: true }));
+      clearTimeout(typingTimeouts.current[data.tabId]);
+      typingTimeouts.current[data.tabId] = setTimeout(() => {
+        setIsTypingByTab((prev) => ({ ...prev, [data.tabId]: false }));
+      }, 3000);
     });
 
     return () => { offMessage(); offEdit(); offTyping(); };
-  }, [activeTab]);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -357,14 +404,21 @@ function App() {
 
   const handleSend = useCallback(() => {
     const text = input.trim();
-    if (!text) return;
+    if (!text && attachedFiles.length === 0) return;
 
-    setMessagesByTab((prev) => ({ ...prev, [activeTab]: [...(prev[activeTab] ?? []), { id: `local_${Date.now()}`, text, author: "user", timestamp: Date.now() }] }));
+    const tabId = activeTab;
+    const files = attachedFiles.length > 0 ? attachedFiles : undefined;
+    const filesMeta = files?.map(({ name, mimeType }) => ({ name, mimeType }));
+    setMessagesByTab((prev) => ({
+      ...prev,
+      [tabId]: [...(prev[tabId] ?? []), { id: `local_${Date.now()}`, text, author: "user" as const, timestamp: Date.now(), files: filesMeta }],
+    }));
     setInput("");
-    setIsTyping(true);
-    window.chatBridge.sendMessage(text);
+    setAttachedFiles([]);
+    setIsTypingByTab((prev) => ({ ...prev, [tabId]: true }));
+    window.chatBridge.sendMessage(tabId, text, files);
     inputRef.current?.focus();
-  }, [input, activeTab]);
+  }, [input, activeTab, attachedFiles]);
 
   const handleTogglePin = useCallback(async () => {
     const next = !pinned;
@@ -400,6 +454,12 @@ function App() {
       const { [id]: _, ...rest } = prev;
       return rest;
     });
+    setIsTypingByTab((prev) => {
+      const { [id]: _, ...rest } = prev;
+      return rest;
+    });
+    clearTimeout(typingTimeouts.current[id]);
+    delete typingTimeouts.current[id];
   }, [activeTab]);
 
   return (
@@ -441,38 +501,62 @@ function App() {
           </div>
         </ScrollArea>
 
-        <footer className="flex items-center gap-2 px-3 py-2.5 border-t border-border shrink-0">
-          {(isListening || isTranscribing) && (
-            <div className={`flex items-center gap-1.5 ${isListening ? "text-red-400 animate-pulse" : "text-yellow-400"}`}>
-              <Mic size={14} />
-              <span className="text-[11px] font-medium">
-                {isListening ? "Recording..." : "Transcribing..."}
-              </span>
+        <footer className="border-t border-border shrink-0">
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+              {attachedFiles.map((file, i) => (
+                <span key={i} className="inline-flex items-center gap-1 bg-secondary rounded-md px-2 py-1 text-[11px] text-muted-foreground">
+                  <Paperclip size={10} />
+                  <span className="truncate max-w-32">{file.name}</span>
+                  <button onClick={() => handleRemoveFile(i)} className="hover:text-foreground transition-colors">
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
             </div>
           )}
-          <Input
-            ref={inputRef}
-            placeholder={
-              isListening ? "Speak now... (release Control to send)"
-              : isTranscribing ? "Transcribing..."
-              : "Message... (hold Control to speak)"
-            }
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) handleSend();
-            }}
-            autoFocus
-            className={`flex-1 bg-secondary text-[13px] ${isListening ? "border-red-400/50" : isTranscribing ? "border-yellow-400/50" : ""}`}
-          />
-          <Button
-            size="icon"
-            onClick={handleSend}
-            disabled={!input.trim()}
-            className="cursor-default"
-          >
-            <ArrowRight size={16} strokeWidth={2.5} />
-          </Button>
+          <div className="flex items-center gap-2 px-3 py-2.5">
+            {(isListening || isTranscribing) && (
+              <div className={`flex items-center gap-1.5 ${isListening ? "text-red-400 animate-pulse" : "text-yellow-400"}`}>
+                <Mic size={14} />
+                <span className="text-[11px] font-medium">
+                  {isListening ? "Recording..." : "Transcribing..."}
+                </span>
+              </div>
+            )}
+            <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => fileInputRef.current?.click()}
+              className="shrink-0 cursor-default text-muted-foreground"
+            >
+              <Paperclip size={16} />
+            </Button>
+            <Input
+              ref={inputRef}
+              placeholder={
+                isListening ? "Speak now... (release Control to send)"
+                : isTranscribing ? "Transcribing..."
+                : "Message... (hold Control to speak)"
+              }
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) handleSend();
+              }}
+              autoFocus
+              className={`flex-1 bg-secondary text-[13px] ${isListening ? "border-red-400/50" : isTranscribing ? "border-yellow-400/50" : ""}`}
+            />
+            <Button
+              size="icon"
+              onClick={handleSend}
+              disabled={!input.trim() && attachedFiles.length === 0}
+              className="cursor-default"
+            >
+              <ArrowRight size={16} strokeWidth={2.5} />
+            </Button>
+          </div>
         </footer>
       </div>
     </TooltipProvider>
