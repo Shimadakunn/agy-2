@@ -1,4 +1,11 @@
-import { app, BrowserWindow, ipcMain, screen, shell, systemPreferences } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  screen,
+  shell,
+  systemPreferences,
+} from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -140,9 +147,11 @@ function ensureOverlayWindow() {
   overlayWin.setVisibleOnAllWorkspaces(true);
   overlayWin.setAlwaysOnTop(true, "floating");
   overlayWin.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(OVERLAY_HTML)}`
+    `data:text/html;charset=utf-8,${encodeURIComponent(OVERLAY_HTML)}`,
   );
-  overlayWin.on("closed", () => { overlayWin = null; });
+  overlayWin.on("closed", () => {
+    overlayWin = null;
+  });
 
   return overlayWin;
 }
@@ -158,15 +167,21 @@ function showOverlay(tabIndex: number, tabLabel: string) {
     overlay.webContents
       .executeJavaScript(
         `document.getElementById('tab-label').textContent=${JSON.stringify(tabLabel)};` +
-        `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
-        `document.getElementById('mic').className='mic recording';`
+          `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
+          `document.getElementById('mic').className='mic recording';`,
       )
       .catch(() => {});
   };
 
   if (overlay.webContents.isLoading())
-    overlay.webContents.once("did-finish-load", () => { update(); overlay.show(); });
-  else { update(); overlay.show(); }
+    overlay.webContents.once("did-finish-load", () => {
+      update();
+      overlay.show();
+    });
+  else {
+    update();
+    overlay.show();
+  }
 }
 
 function hideOverlay() {
@@ -174,13 +189,17 @@ function hideOverlay() {
   overlayWin.hide();
 }
 
-function updateOverlay(tabIndex: number, tabLabel: string, isTranscribing: boolean) {
+function updateOverlay(
+  tabIndex: number,
+  tabLabel: string,
+  isTranscribing: boolean,
+) {
   if (!overlayWin || overlayWin.isDestroyed()) return;
   overlayWin.webContents
     .executeJavaScript(
       `document.getElementById('tab-label').textContent=${JSON.stringify(isTranscribing ? "Transcribing..." : tabLabel)};` +
-      `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
-      `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`
+        `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
+        `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`,
     )
     .catch(() => {});
 }
@@ -227,10 +246,21 @@ async function initAgent(): Promise<void> {
 
 function isTextMimeType(mime: string): boolean {
   if (mime.startsWith("text/")) return true;
-  return ["application/json", "application/xml", "application/javascript", "application/x-yaml", "application/yaml", "application/toml"].includes(mime);
+  return [
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-yaml",
+    "application/yaml",
+    "application/toml",
+  ].includes(mime);
 }
 
-async function askAgent(userId: string, text: string, files?: AttachedFile[]): Promise<string> {
+async function askAgent(
+  userId: string,
+  text: string,
+  files?: AttachedFile[],
+): Promise<string> {
   if (!runner) return "Agent not initialized yet. Please wait a moment.";
 
   return chatTabContext.run(userId, async () => {
@@ -244,13 +274,20 @@ async function askAgent(userId: string, text: string, files?: AttachedFile[]): P
       sessionIds.set(userId, sessionId);
     }
 
-    const messageParts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [];
+    const messageParts: (
+      | { text: string }
+      | { inlineData: { mimeType: string; data: string } }
+    )[] = [];
     if (files?.length) {
       for (const file of files) {
         if (isTextMimeType(file.mimeType))
-          messageParts.push({ text: `[File: ${file.name}]\n${Buffer.from(file.data, "base64").toString("utf-8")}` });
+          messageParts.push({
+            text: `[File: ${file.name}]\n${Buffer.from(file.data, "base64").toString("utf-8")}`,
+          });
         else
-          messageParts.push({ inlineData: { mimeType: file.mimeType, data: file.data } });
+          messageParts.push({
+            inlineData: { mimeType: file.mimeType, data: file.data },
+          });
       }
     }
     if (text) messageParts.push({ text });
@@ -301,7 +338,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.mjs"),
     },
   });
-  win.setContentProtection(true);
+  // win.setContentProtection(true);
   // Forward bot messages to the renderer + persist to Firestore
   localAdapter.events.on("bot-message", (data) => {
     win?.webContents.send("chat:bot-message", data);
@@ -328,18 +365,24 @@ function createWindow() {
   });
 
   // Handle user messages from the renderer
-  ipcMain.on("chat:user-message", (_event, tabId: string, text: string, files?: AttachedFile[]) => {
-    localAdapter.injectUserMessage(tabId, text, files);
-    // Persist user message to Firestore (fire-and-forget)
-    const filesMeta = files?.map(({ name, mimeType }) => ({ name, mimeType }));
-    saveMessage(tabId, {
-      id: `user_${Date.now()}`,
-      text,
-      author: "user",
-      timestamp: Date.now(),
-      files: filesMeta,
-    }).catch(() => {});
-  });
+  ipcMain.on(
+    "chat:user-message",
+    (_event, tabId: string, text: string, files?: AttachedFile[]) => {
+      localAdapter.injectUserMessage(tabId, text, files);
+      // Persist user message to Firestore (fire-and-forget)
+      const filesMeta = files?.map(({ name, mimeType }) => ({
+        name,
+        mimeType,
+      }));
+      saveMessage(tabId, {
+        id: `user_${Date.now()}`,
+        text,
+        author: "user",
+        timestamp: Date.now(),
+        files: filesMeta,
+      }).catch(() => {});
+    },
+  );
 
   // Pin window (always on top)
   ipcMain.handle("window:set-pinned", (_event, pinned: boolean) => {
@@ -358,19 +401,29 @@ function createWindow() {
   });
 
   // Save conversation metadata when a tab is created/renamed
-  ipcMain.on("chat:save-conversation", (_event, tabId: string, label: string) => {
-    saveConversation(tabId, label).catch(() => {});
-  });
+  ipcMain.on(
+    "chat:save-conversation",
+    (_event, tabId: string, label: string) => {
+      saveConversation(tabId, label).catch(() => {});
+    },
+  );
 
   // Cloud database — load persisted conversations and messages
   ipcMain.handle("db:load-conversations", () => loadConversations());
-  ipcMain.handle("db:load-messages", (_event, tabId: string) => loadMessages(tabId));
+  ipcMain.handle("db:load-messages", (_event, tabId: string) =>
+    loadMessages(tabId),
+  );
   ipcMain.handle("db:get-user-email", () => getUserEmail());
 
   // Browser tab info per chat (for UI display)
   ipcMain.handle("browser:chat-tabs", async (_event, chatId: string) => {
     const tabs = await getChatTabInfo(chatId);
-    return tabs.map((t, i) => ({ index: i, url: t.url, title: t.title || "", active: t.active }));
+    return tabs.map((t, i) => ({
+      index: i,
+      url: t.url,
+      title: t.title || "",
+      active: t.active,
+    }));
   });
 
   // Google OAuth
@@ -389,10 +442,15 @@ function createWindow() {
   ipcMain.on("overlay:show", (_event, tabIndex: number, tabLabel: string) => {
     showOverlay(tabIndex, tabLabel);
   });
-  ipcMain.on("overlay:hide", () => { hideOverlay(); });
-  ipcMain.on("overlay:update", (_event, tabIndex: number, tabLabel: string, isTranscribing: boolean) => {
-    updateOverlay(tabIndex, tabLabel, isTranscribing);
+  ipcMain.on("overlay:hide", () => {
+    hideOverlay();
   });
+  ipcMain.on(
+    "overlay:update",
+    (_event, tabIndex: number, tabLabel: string, isTranscribing: boolean) => {
+      updateOverlay(tabIndex, tabLabel, isTranscribing);
+    },
+  );
 
   // Microphone permission for voice input
   ipcMain.handle("voice:request-mic-permission", async () => {
