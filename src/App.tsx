@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
+import { marked } from "marked";
 import { Pin, PinOff, Plus, X, ArrowRight, Unplug, Cable, Mic, Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,7 @@ declare global {
   interface Window {
     chatBridge: {
       sendMessage: (tabId: string, text: string, files?: AttachedFileData[]) => void;
+      closeTab: (tabId: string) => void;
       setPinned: (pinned: boolean) => Promise<boolean>;
       onBotMessage: (cb: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => () => void;
       onBotEdit: (cb: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => () => void;
@@ -52,13 +54,20 @@ function formatTime(ts: number) {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+marked.setOptions({ breaks: true, gfm: true });
+
 function renderMarkdown(text: string) {
-  const html = text
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/`(.+?)`/g, '<code class="bg-white/10 px-1 py-0.5 rounded text-[13px] font-mono">$1</code>')
-    .replace(/\n/g, "<br/>");
-  return DOMPurify.sanitize(html, { ALLOWED_TAGS: ["strong", "em", "code", "br"], ALLOWED_ATTR: ["class"] });
+  const html = marked.parse(text) as string;
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: [
+      "p", "br", "strong", "em", "del", "code", "pre",
+      "h1", "h2", "h3", "h4", "h5", "h6",
+      "ul", "ol", "li", "blockquote", "hr",
+      "a", "table", "thead", "tbody", "tr", "th", "td",
+      "span", "div",
+    ],
+    ALLOWED_ATTR: ["class", "href", "target", "rel"],
+  });
 }
 
 function TabBar({ tabs, activeId, pinned, connected, onSelect, onClose, onNew, onTogglePin, onToggleConnect }: {
@@ -166,7 +175,8 @@ function TypingIndicator() {
 
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.author === "user";
-  const sanitizedHtml = msg.text ? renderMarkdown(msg.text) : "";
+  // Bot markdown is sanitized via DOMPurify in renderMarkdown()
+  const sanitizedHtml = !isUser && msg.text ? renderMarkdown(msg.text) : "";
 
   return (
     <div className={`flex gap-2 max-w-[85%] animate-fade-in ${isUser ? "self-end flex-row-reverse" : "self-start"}`}>
@@ -187,9 +197,12 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
             ))}
           </div>
         )}
+        {msg.text && isUser && (
+          <div className="break-words whitespace-pre-wrap">{msg.text}</div>
+        )}
         {sanitizedHtml && (
           <div
-            className="break-words [&_strong]:font-semibold"
+            className="prose-bot break-words"
             dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
           />
         )}
@@ -442,6 +455,7 @@ function App() {
   }, []);
 
   const handleCloseTab = useCallback((id: string) => {
+    window.chatBridge.closeTab(id);
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id);
       if (id === activeTab && next.length > 0) {

@@ -62,6 +62,13 @@ export function isConnected(): boolean {
   return !!getClient().credentials?.access_token;
 }
 
+export async function getAccessToken(): Promise<string> {
+  const client = getClient();
+  const { token } = await client.getAccessToken();
+  if (!token) throw new Error("No access token. Connect Google account first.");
+  return token;
+}
+
 export async function loadStoredToken(): Promise<boolean> {
   try {
     const filePath = tokenPath();

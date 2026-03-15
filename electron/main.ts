@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, systemPreferences } from "electron";
+import { app, BrowserWindow, ipcMain, shell, systemPreferences } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -18,7 +18,9 @@ import {
   getBrowserTools,
   closeBrowserToolset,
   isBrowserConnected,
+  cleanupBrowserTab,
 } from "./tools/agent-browser";
+import { chatTabContext } from "./tools/tab-context";
 import {
   loadStoredToken,
   startOAuthFlow,
@@ -51,7 +53,13 @@ const bot = new Chat({
   logger: "debug",
 });
 
-const AGENT_INSTRUCTION = ``;
+const AGENT_INSTRUCTION = `You are Agy, a personal assistant with direct access to Google Workspace APIs.
+
+IMPORTANT: For ANY Google Workspace operation (email, calendar, drive, docs, sheets, slides, tasks, forms, meet, contacts), ALWAYS use the "gws" tool. NEVER use the browser to interact with Google services — the gws tool is faster and more reliable.
+
+If you don't know the exact gws command syntax, use "gws_schema" first to look up the method and its parameters.
+
+Only use browser tools for non-Google websites or when the user explicitly asks you to interact with a webpage.`;
 
 let runner: InMemoryRunner | null = null;
 const sessionIds = new Map<string, string>();
@@ -77,41 +85,43 @@ function isTextMimeType(mime: string): boolean {
 async function askAgent(userId: string, text: string, files?: AttachedFile[]): Promise<string> {
   if (!runner) return "Agent not initialized yet. Please wait a moment.";
 
-  let sessionId = sessionIds.get(userId);
-  if (!sessionId) {
-    const session = await runner.sessionService.createSession({
-      appName: "agy",
+  return chatTabContext.run(userId, async () => {
+    let sessionId = sessionIds.get(userId);
+    if (!sessionId) {
+      const session = await runner!.sessionService.createSession({
+        appName: "agy",
+        userId,
+      });
+      sessionId = session.id;
+      sessionIds.set(userId, sessionId);
+    }
+
+    const messageParts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [];
+    if (files?.length) {
+      for (const file of files) {
+        if (isTextMimeType(file.mimeType))
+          messageParts.push({ text: `[File: ${file.name}]\n${Buffer.from(file.data, "base64").toString("utf-8")}` });
+        else
+          messageParts.push({ inlineData: { mimeType: file.mimeType, data: file.data } });
+      }
+    }
+    if (text) messageParts.push({ text });
+    if (messageParts.length === 0) messageParts.push({ text: "" });
+
+    const responseParts: string[] = [];
+    for await (const event of runner!.runAsync({
       userId,
-    });
-    sessionId = session.id;
-    sessionIds.set(userId, sessionId);
-  }
-
-  const messageParts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [];
-  if (files?.length) {
-    for (const file of files) {
-      if (isTextMimeType(file.mimeType))
-        messageParts.push({ text: `[File: ${file.name}]\n${Buffer.from(file.data, "base64").toString("utf-8")}` });
-      else
-        messageParts.push({ inlineData: { mimeType: file.mimeType, data: file.data } });
+      sessionId,
+      newMessage: { role: "user", parts: messageParts },
+    })) {
+      if (isFinalResponse(event)) {
+        const content = stringifyContent(event);
+        if (content) responseParts.push(content);
+      }
     }
-  }
-  if (text) messageParts.push({ text });
-  if (messageParts.length === 0) messageParts.push({ text: "" });
 
-  const responseParts: string[] = [];
-  for await (const event of runner.runAsync({
-    userId,
-    sessionId,
-    newMessage: { role: "user", parts: messageParts },
-  })) {
-    if (isFinalResponse(event)) {
-      const content = stringifyContent(event);
-      if (content) responseParts.push(content);
-    }
-  }
-
-  return responseParts.join("") || "Sorry, I couldn't generate a response.";
+    return responseParts.join("") || "Sorry, I couldn't generate a response.";
+  });
 }
 
 bot.onNewMention(async (thread, message) => {
@@ -171,6 +181,12 @@ function createWindow() {
   // Browser CDP connection status
   ipcMain.handle("browser:extension-status", () => isBrowserConnected());
 
+  // Tab lifecycle — clean up browser tab + agent session
+  ipcMain.on("chat:close-tab", (_event, tabId: string) => {
+    sessionIds.delete(tabId);
+    cleanupBrowserTab(tabId);
+  });
+
   // Google OAuth
   ipcMain.handle("auth:status", () => isConnected());
   ipcMain.handle("auth:connect", async () => {
@@ -226,6 +242,18 @@ function createWindow() {
       }
     },
   );
+
+  // Open external links in the OS default browser instead of navigating the app window
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL)) return;
+    if (url.startsWith("file://")) return;
+    event.preventDefault();
+    shell.openExternal(url);
+  });
 
   if (VITE_DEV_SERVER_URL) win.loadURL(VITE_DEV_SERVER_URL);
   else win.loadFile(path.join(RENDERER_DIST, "index.html"));

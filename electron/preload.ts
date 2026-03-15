@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("ipcRenderer", {
 contextBridge.exposeInMainWorld("chatBridge", {
   sendMessage: (tabId: string, text: string, files?: { name: string; mimeType: string; data: string }[]) =>
     ipcRenderer.send("chat:user-message", tabId, text, files),
+  closeTab: (tabId: string) => ipcRenderer.send("chat:close-tab", tabId),
   setPinned: (pinned: boolean) => ipcRenderer.invoke("window:set-pinned", pinned),
   onBotMessage: (callback: (data: { id: string; text: string; timestamp: number; tabId: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { id: string; text: string; timestamp: number; tabId: string }) => callback(data);
