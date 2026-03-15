@@ -23,9 +23,9 @@ importers:
       '@google/genai':
         specifier: ^1.45.0
         version: 1.45.0(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.27.1
-        version: 1.27.1(zod@4.3.6)
+      agent-browser:
+        specifier: ^0.20.7
+        version: 0.20.7
       chat:
         specifier: ^4.20.0
         version: 4.20.0
@@ -1489,6 +1489,10 @@ packages:
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
+
+  agent-browser@0.20.7:
+    resolution: {integrity: sha512-cSj2c9Xw5a57btrkR7GFH8lkjqEpxbzoKNMLBfSjaXq5d/CfDclPYEZ6N4yWChmE0hTZcKg1xSSm/xHl//GNnA==}
+    hasBin: true
 
   agentkeepalive@4.6.0:
     resolution: {integrity: sha512-kja8j7PjmncONqaTsB8fQ+wE2mSU2DJ9D4XKoJ5PFWIdRMa6SLSN1ff4mOr4jCbfRSsxR4keIiySJU0N9T5hIQ==}
@@ -6317,6 +6321,8 @@ snapshots:
       - supports-color
 
   agent-base@7.1.4: {}
+
+  agent-browser@0.20.7: {}
 
   agentkeepalive@4.6.0:
     dependencies:

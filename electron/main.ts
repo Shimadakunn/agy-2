@@ -17,8 +17,8 @@ import { computerTools } from "./tools/computer";
 import {
   getBrowserTools,
   closeBrowserToolset,
-  isBrowserExtensionConnected,
-} from "./tools/browser-bridge";
+  isBrowserConnected,
+} from "./tools/agent-browser";
 import {
   loadStoredToken,
   startOAuthFlow,
@@ -56,7 +56,7 @@ const AGENT_INSTRUCTION = ``;
 let runner: InMemoryRunner | null = null;
 const sessionIds = new Map<string, string>();
 
-async function initAgent(): Promise<number> {
+async function initAgent(): Promise<void> {
   const browserTools = await getBrowserTools();
 
   const agent = new LlmAgent({
@@ -67,7 +67,6 @@ async function initAgent(): Promise<number> {
   });
 
   runner = new InMemoryRunner({ agent, appName: "agy" });
-  return browserTools.length;
 }
 
 async function askAgent(userId: string, text: string): Promise<string> {
@@ -148,10 +147,8 @@ function createWindow() {
     return pinned;
   });
 
-  // Browser extension status
-  ipcMain.handle("browser:extension-status", () =>
-    isBrowserExtensionConnected(),
-  );
+  // Browser CDP connection status
+  ipcMain.handle("browser:extension-status", () => isBrowserConnected());
 
   // Google OAuth
   ipcMain.handle("auth:status", () => isConnected());
@@ -230,22 +227,7 @@ app.on("before-quit", () => {
 
 app.whenReady().then(async () => {
   await loadStoredToken();
-  const browserToolCount = await initAgent();
+  await initAgent();
   await bot.initialize();
   createWindow();
-
-  if (browserToolCount === 0) {
-    let attempts = 0;
-    const retryBrowserTools = async () => {
-      if (++attempts > 10) return;
-      if (await isBrowserExtensionConnected()) {
-        console.log("[Main] Chrome MCP bridge detected, reinitializing agent");
-        sessionIds.clear();
-        await initAgent();
-      } else {
-        setTimeout(retryBrowserTools, 3000);
-      }
-    };
-    setTimeout(retryBrowserTools, 3000);
-  }
 });
