@@ -165,19 +165,8 @@ function showOverlay(tabIndex: number, tabLabel: string) {
   };
 
   if (overlay.webContents.isLoading())
-<<<<<<< HEAD
-    overlay.webContents.once("did-finish-load", () => {
-      update();
-      overlay.show();
-    });
-  else {
-    update();
-    overlay.show();
-  }
-=======
     overlay.webContents.once("did-finish-load", () => { update(); overlay.show(); });
   else { update(); overlay.show(); }
->>>>>>> 5160f8e (wip)
 }
 
 function hideOverlay() {
@@ -190,13 +179,8 @@ function updateOverlay(tabIndex: number, tabLabel: string, isTranscribing: boole
   overlayWin.webContents
     .executeJavaScript(
       `document.getElementById('tab-label').textContent=${JSON.stringify(isTranscribing ? "Transcribing..." : tabLabel)};` +
-<<<<<<< HEAD
-        `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
-        `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`,
-=======
       `document.getElementById('kbd').textContent='⌃${tabIndex + 1}';` +
       `document.getElementById('mic').className='mic ${isTranscribing ? "transcribing" : "recording"}';`
->>>>>>> 5160f8e (wip)
     )
     .catch(() => {});
 }

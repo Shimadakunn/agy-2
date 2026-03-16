@@ -1,9 +1,8 @@
 import type { FunctionTool } from "@google/adk";
 import {
   resolveBin,
-  detectCdp,
-  setCdpPort,
-  getCdpPort,
+  detectBrowser,
+  setBrowserReady,
 } from "./core";
 
 export {
@@ -89,10 +88,10 @@ export async function getBrowserTools(): Promise<FunctionTool[]> {
     return [];
   }
 
-  setCdpPort(await detectCdp());
-  const port = getCdpPort();
-  if (port) console.log(`[Browser] CDP detected on port ${port}`);
-  else console.warn("[Browser] No browser CDP port detected. Tools will retry on use.");
+  const connected = await detectBrowser();
+  setBrowserReady(connected);
+  if (connected) console.log("[Browser] connected to browser");
+  else console.warn("[Browser] No browser detected. Tools will retry on use.");
 
   return allTools;
 }

@@ -18,7 +18,7 @@ const localBin = path.resolve(
   "agent-browser",
 );
 let bin = "";
-let cdpPort: number | null = null;
+let browserConnected = false;
 
 function strip(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "").trim();
@@ -43,33 +43,26 @@ async function resolveBin(): Promise<string> {
   );
 }
 
-async function detectCdp(): Promise<number | null> {
-  const ports = [
-    process.env.BROWSER_CDP_PORT
-      ? parseInt(process.env.BROWSER_CDP_PORT, 10)
-      : null,
-    57450,
-  ].filter((p): p is number => p !== null);
-
-  for (const port of ports) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (res.ok) return port;
-    } catch {}
+async function detectBrowser(): Promise<boolean> {
+  try {
+    const binary = await resolveBin();
+    const { stdout } = await execFile(
+      binary,
+      ["--auto-connect", "get", "cdp-url"],
+      { timeout: 10_000 },
+    );
+    return strip(stdout).startsWith("ws://");
+  } catch {
+    return false;
   }
-  return null;
 }
 
 async function runRaw(args: string[], timeout = 30_000): Promise<string> {
   const binary = await resolveBin();
-  if (!cdpPort) cdpPort = await detectCdp();
-
-  const fullArgs = cdpPort ? ["--cdp", String(cdpPort), ...args] : args;
+  if (!browserConnected) browserConnected = await detectBrowser();
 
   try {
-    const { stdout } = await execFile(binary, fullArgs, {
+    const { stdout } = await execFile(binary, args, {
       timeout,
       env: { ...process.env, AGENT_BROWSER_DEBUG: "1" },
     });
@@ -84,7 +77,7 @@ async function runRaw(args: string[], timeout = 30_000): Promise<string> {
       errMsg.includes("Failed to connect") ||
       out.includes("Failed to connect")
     )
-      cdpPort = null;
+      browserConnected = false;
 
     throw new Error(
       out || errMsg || (err instanceof Error ? err.message : String(err)),
@@ -92,107 +85,67 @@ async function runRaw(args: string[], timeout = 30_000): Promise<string> {
   }
 }
 
-// ── Per-chat-tab browser tab management via CDP ──
+// ── Per-chat tab management via agent-browser binary ──
 
-interface CdpTarget {
-  id: string;
+interface TabInfo {
+  index: number;
   url: string;
-  type: string;
+  title: string;
 }
 
-const tabTargets = new Map<string, string>();
-let lastSwitchedTab: string | null = null;
+const chatTabIndices = new Map<string, number>();
+let lastSwitchedChat: string | null = null;
 
-async function fetchCdpTargets(): Promise<CdpTarget[]> {
+async function listTabs(): Promise<TabInfo[]> {
   try {
-    const res = await fetch(`http://127.0.0.1:${cdpPort}/json`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    const all = (await res.json()) as CdpTarget[];
-    const pages = all.filter((t) => t.type === "page");
-    console.log(
-      `[Browser] fetchCdpTargets: ${all.length} targets, ${pages.length} pages`,
-    );
-    if (!pages.length && all.length)
-      console.log(
-        `[Browser] target types: ${[...new Set(all.map((t) => t.type))].join(", ")}`,
-      );
-    return pages;
-  } catch (err) {
-    console.warn(
-      "[Browser] fetchCdpTargets failed:",
-      err instanceof Error ? err.message : err,
-    );
+    const raw = await runRaw(["tab", "list", "--json"]);
+    const parsed = JSON.parse(raw);
+    return parsed?.data?.tabs ?? parsed?.tabs ?? (Array.isArray(parsed) ? parsed : []);
+  } catch {
     return [];
   }
 }
 
-async function createCdpTab(url = "about:blank"): Promise<CdpTarget | null> {
-  const endpoint = `http://127.0.0.1:${cdpPort}/json/new?${url}`;
-  try {
-    const res = await fetch(endpoint, {
-      signal: AbortSignal.timeout(5000),
-    });
-    const body = await res.text();
-    console.log(
-      `[Browser] createCdpTab: status=${res.status} body=${body.slice(0, 200)}`,
-    );
-    if (!res.ok) return null;
-    return JSON.parse(body) as CdpTarget;
-  } catch (err) {
-    console.warn(
-      `[Browser] createCdpTab failed (${endpoint}):`,
-      err instanceof Error ? err.message : err,
-    );
-    return null;
-  }
-}
-
-async function closeCdpTargetTab(targetId: string): Promise<void> {
-  try {
-    await fetch(`http://127.0.0.1:${cdpPort}/json/close/${targetId}`, {
-      signal: AbortSignal.timeout(2000),
-    });
-  } catch {}
-}
-
 async function ensureAndSwitchTab(chatTabId: string): Promise<void> {
-  if (!cdpPort) return;
+  if (!browserConnected) return;
 
   try {
-    let targetId = tabTargets.get(chatTabId);
-    let targets = await fetchCdpTargets();
-    console.log(
-      `[Browser] ensureTab: chat=${chatTabId} existing=${targetId ?? "none"} pages=${targets.length}`,
-    );
+    let tabIndex = chatTabIndices.get(chatTabId);
 
-    // Target was closed externally — clear stale mapping
-    if (targetId && !targets.some((t) => t.id === targetId)) {
-      console.log(`[Browser] stale target ${targetId}, clearing`);
-      tabTargets.delete(chatTabId);
-      targetId = undefined;
-    }
-
-    // Create a dedicated browser tab for this chat tab
-    if (!targetId) {
-      const newTarget = await createCdpTab();
-      if (!newTarget) {
-        console.warn("[Browser] createCdpTab returned null");
-        return;
+    // Validate existing index is still in range
+    if (tabIndex !== undefined) {
+      const tabs = await listTabs();
+      if (tabIndex >= tabs.length) {
+        console.log(`[Browser] stale tab index ${tabIndex} (only ${tabs.length} tabs), clearing`);
+        chatTabIndices.delete(chatTabId);
+        tabIndex = undefined;
       }
-      console.log(
-        `[Browser] created CDP tab ${newTarget.id} (${newTarget.url})`,
-      );
-      targetId = newTarget.id;
-      tabTargets.set(chatTabId, targetId);
-      targets = await fetchCdpTargets();
     }
 
-    const index = targets.findIndex((t) => t.id === targetId);
-    console.log(
-      `[Browser] switching to tab index=${index} for chat=${chatTabId}`,
-    );
-    if (index >= 0) await runRaw(["tab", String(index)]);
+    if (tabIndex === undefined) {
+      const tabs = await listTabs();
+      const activeTab = tabs.find((t) => t.active);
+      const activeIdx = activeTab?.index ?? 0;
+
+      // If the active tab is already owned by another chat, create a new one
+      if ([...chatTabIndices.values()].includes(activeIdx)) {
+        const raw = await runRaw(["tab", "new", "--json"]);
+        const parsed = JSON.parse(raw);
+        tabIndex = parsed?.data?.index;
+        if (typeof tabIndex !== "number") {
+          console.warn("[Browser] tab new returned unexpected format:", raw.slice(0, 200));
+          return;
+        }
+      } else {
+        // Claim the current active tab — no blank tab created
+        tabIndex = activeIdx;
+      }
+
+      chatTabIndices.set(chatTabId, tabIndex);
+      console.log(`[Browser] assigned tab index=${tabIndex} for chat=${chatTabId}`);
+    }
+
+    await runRaw(["tab", String(tabIndex)]);
   } catch (err) {
     console.warn(
       "[Browser] ensureAndSwitchTab failed:",
@@ -202,15 +155,15 @@ async function ensureAndSwitchTab(chatTabId: string): Promise<void> {
 }
 
 async function run(args: string[], timeout = 30_000): Promise<string> {
-  if (!cdpPort) cdpPort = await detectCdp();
+  if (!browserConnected) browserConnected = await detectBrowser();
 
   const chatTabId = chatTabContext.getStore();
-  if (chatTabId && cdpPort && chatTabId !== lastSwitchedTab) {
+  if (chatTabId && browserConnected && chatTabId !== lastSwitchedChat) {
     console.log(
-      `[Browser] run: switching context to chat=${chatTabId} (was ${lastSwitchedTab})`,
+      `[Browser] run: switching context to chat=${chatTabId} (was ${lastSwitchedChat})`,
     );
     await ensureAndSwitchTab(chatTabId);
-    lastSwitchedTab = chatTabId;
+    lastSwitchedChat = chatTabId;
   }
 
   return runRaw(args, timeout);
@@ -493,10 +446,9 @@ const allTools = [
 
 /** Navigate the chat tab's dedicated browser tab to a URL (used by GWS auto-open). */
 export async function openUrlInTab(url: string): Promise<void> {
-  if (!cdpPort) cdpPort = await detectCdp();
+  if (!browserConnected) browserConnected = await detectBrowser();
 
-  if (cdpPort) {
-    // Try 1: tab-aware navigation
+  if (browserConnected) {
     try {
       await run(["open", url]);
       console.log(`[Browser] opened ${url} in tab`);
@@ -508,7 +460,6 @@ export async function openUrlInTab(url: string): Promise<void> {
       );
     }
 
-    // Try 2: raw navigation (skip tab context, use whatever page agent-browser targets)
     try {
       await runRaw(["open", url]);
       console.log(`[Browser] opened ${url} (raw fallback)`);
@@ -521,7 +472,6 @@ export async function openUrlInTab(url: string): Promise<void> {
     }
   }
 
-  // Try 3: system default browser
   try {
     await execFile("open", [url], { timeout: 5000 });
     console.log(`[Browser] opened ${url} in system browser`);
@@ -535,29 +485,38 @@ export async function openUrlInTab(url: string): Promise<void> {
 
 /** Close the browser tab associated with a chat tab. */
 export async function cleanupChatTabs(chatTabId: string): Promise<void> {
-  const targetId = tabTargets.get(chatTabId);
-  if (!targetId) return;
-  tabTargets.delete(chatTabId);
-  if (lastSwitchedTab === chatTabId) lastSwitchedTab = null;
-  if (cdpPort) await closeCdpTargetTab(targetId);
+  const tabIndex = chatTabIndices.get(chatTabId);
+  if (tabIndex === undefined) return;
+  chatTabIndices.delete(chatTabId);
+  if (lastSwitchedChat === chatTabId) lastSwitchedChat = null;
+
+  if (browserConnected) {
+    try {
+      await runRaw(["tab", "close", String(tabIndex)]);
+      // Adjust indices for tabs that shifted down after the close
+      for (const [chatId, idx] of chatTabIndices) {
+        if (idx > tabIndex) chatTabIndices.set(chatId, idx - 1);
+      }
+    } catch {}
+  }
 }
 
 /** Return info about browser tabs owned by a chat tab. */
 export async function getChatTabInfo(
   chatTabId: string,
 ): Promise<{ url: string; title: string; active: boolean }[]> {
-  const targetId = tabTargets.get(chatTabId);
-  if (!targetId || !cdpPort) return [];
+  const tabIndex = chatTabIndices.get(chatTabId);
+  if (tabIndex === undefined || !browserConnected) return [];
 
-  const targets = await fetchCdpTargets();
-  const target = targets.find((t) => t.id === targetId);
-  if (!target) return [];
+  const tabs = await listTabs();
+  const tab = tabs[tabIndex];
+  if (!tab) return [];
 
   return [
     {
-      url: target.url,
-      title: target.url,
-      active: lastSwitchedTab === chatTabId,
+      url: tab.url,
+      title: tab.title || tab.url,
+      active: lastSwitchedChat === chatTabId,
     },
   ];
 }
@@ -571,11 +530,11 @@ export async function getBrowserTools(): Promise<FunctionTool[]> {
     return [];
   }
 
-  cdpPort = await detectCdp();
-  if (cdpPort) console.log(`[Browser] CDP detected on port ${cdpPort}`);
+  browserConnected = await detectBrowser();
+  if (browserConnected) console.log("[Browser] connected to browser");
   else
     console.warn(
-      "[Browser] No browser CDP port detected. Tools will retry on use.",
+      "[Browser] No browser detected. Tools will retry on use.",
     );
 
   return allTools;
@@ -586,9 +545,11 @@ export async function closeBrowserToolset(): Promise<void> {
     const binary = await resolveBin();
     await execFile(binary, ["close"], { timeout: 5000 });
   } catch {}
-  cdpPort = null;
+  browserConnected = false;
 }
 
 export async function isBrowserConnected(): Promise<boolean> {
-  return (await detectCdp()) !== null;
+  if (browserConnected) return true;
+  browserConnected = await detectBrowser();
+  return browserConnected;
 }

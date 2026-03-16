@@ -2,14 +2,15 @@ import { FunctionTool } from "@google/adk";
 import { z } from "zod";
 import {
   run,
+  runRaw,
   ok,
   fail,
-  fetchCdpTargets,
+  listBrowserTabs,
   getChatTabInfo,
   createTabForChat,
   setActiveChatTab,
   getChatTabs,
-  getCdpPort,
+  isBrowserReady,
 } from "./core";
 import { chatTabContext } from "../tab-context";
 
@@ -95,7 +96,7 @@ export const browserTabSwitch = new FunctionTool({
       const target = tabs[index];
       setActiveChatTab(chatId, target.id);
 
-      const allTargets = await fetchCdpTargets();
+      const allTargets = await listBrowserTabs();
       const globalIndex = allTargets.findIndex((t) => t.id === target.id);
       if (globalIndex >= 0) await run(["tab", String(globalIndex)]);
 
@@ -125,12 +126,9 @@ export const browserTabClose = new FunctionTool({
       const target = tabs[index];
       const chatTabList = getChatTabs().get(chatId);
 
-      const port = getCdpPort();
-      if (port) {
+      if (isBrowserReady()) {
         try {
-          await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`, {
-            signal: AbortSignal.timeout(2000),
-          });
+          await runRaw(["tab", "close", String(index)]);
         } catch {}
       }
 

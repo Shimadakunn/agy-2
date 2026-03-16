@@ -70,6 +70,21 @@ async function runGws(args: string[], timeout = 30_000): Promise<string> {
 
 const WRITE_METHODS = new Set(["create", "insert"]);
 
+/** Build base64url-encoded RFC 2822 message from human-readable fields */
+function buildRawEmail(fields: { to: string; subject: string; body: string; cc?: string; bcc?: string }): string {
+  const lines = [
+    `To: ${fields.to}`,
+    ...(fields.cc ? [`Cc: ${fields.cc}`] : []),
+    ...(fields.bcc ? [`Bcc: ${fields.bcc}`] : []),
+    `Subject: ${fields.subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"',
+    '',
+    fields.body,
+  ];
+  return Buffer.from(lines.join('\r\n')).toString('base64url');
+}
+
 function extractCreatedUrl(data: Record<string, any>): string | null {
   // Direct URL fields returned by Google APIs
   if (data.spreadsheetUrl) return data.spreadsheetUrl;
@@ -98,8 +113,8 @@ IMPORTANT: use SPACES between all parts, never dots. Example: "gmail users draft
 Common operations (copy these exactly):
 - LIST EMAILS: command="gmail users messages list", params={"userId":"me","maxResults":10}
 - READ EMAIL: command="gmail users messages get", params={"userId":"me","id":"<messageId>","format":"full"}
-- DRAFT EMAIL: command="gmail users drafts create", params={"userId":"me"}, body={"message":{"raw":"<base64url-RFC2822-message>"}}
-- SEND EMAIL: command="gmail users messages send", params={"userId":"me"}, body={"raw":"<base64url-RFC2822-message>"}
+- DRAFT EMAIL: command="gmail users drafts create", params={"userId":"me"}, body={"message":{"to":"recipient@example.com","subject":"Hello","body":"Email content here","cc":"optional@example.com"}}
+- SEND EMAIL: command="gmail users messages send", params={"userId":"me"}, body={"message":{"to":"recipient@example.com","subject":"Hello","body":"Email content here"}}
 - LIST CALENDAR EVENTS: command="calendar events list", params={"calendarId":"primary","maxResults":10}
 - CREATE CALENDAR EVENT: command="calendar events insert", params={"calendarId":"primary"}, body={"summary":"...","start":{"dateTime":"..."},"end":{"dateTime":"..."}}
 - LIST DRIVE FILES: command="drive files list", params={"pageSize":10}
@@ -121,12 +136,77 @@ If unsure about parameters, call gws_schema first.`,
     pageAll: z.boolean().optional().describe("Auto-paginate to fetch all results"),
   }),
   execute: async ({ command, params, body, pageAll }) => {
+    // Defensive: LLM sometimes nests request body inside params
+    if (params?.body && !body) {
+      body = params.body as Record<string, any>;
+      const { body: _, ...rest } = params;
+      params = Object.keys(rest).length ? rest : undefined;
+    }
+
+    // Defensive: LLM puts body-only fields (values, requests, etc.) into params
+    if (params?.values !== undefined) {
+      const { values, ...rest } = params;
+      body = { ...(body || {}), values };
+      params = Object.keys(rest).length ? rest : undefined;
+    }
+    if (params?.requests !== undefined) {
+      const { requests, ...rest } = params;
+      body = { ...(body || {}), requests };
+      params = Object.keys(rest).length ? rest : undefined;
+    }
+
+    // Strip fields the LLM leaks into body that don't belong
+    if (body?.command) {
+      const { command: _, ...rest } = body;
+      body = Object.keys(rest).length ? rest : undefined;
+    }
+    if (body?.params) {
+      const { params: leaked, ...rest } = body;
+      if (typeof leaked === "object" && leaked !== null) {
+        params = { ...(params || {}), ...leaked };
+      }
+      body = Object.keys(rest).length ? rest : undefined;
+    }
+
+    // Normalize values to 2D array for Sheets API
+    // LLM sends flat CSV strings like ["a,b,c","d,e,f"] instead of [["a","b","c"],["d","e","f"]]
+    if (body?.values && Array.isArray(body.values)) {
+      body.values = (body.values as any[]).flatMap((row: any) => {
+        if (Array.isArray(row)) return [row];
+        if (typeof row === "string" && row.includes("\n"))
+          return row.split("\n").filter(Boolean).map((line: string) => line.split(","));
+        if (typeof row === "string")
+          return [row.split(",")];
+        if (row == null) return [];
+        return [[row]];
+      });
+    }
+
+    // Normalize Gmail draft/send: encode human-readable fields into base64url RFC 2822
+    const isGmail = /\b(drafts\s+create|messages\s+send)\b/i.test(command);
+    if (isGmail && body) {
+      // Extract message fields from wherever the LLM put them
+      const msg = body.message ?? body;
+      if (typeof msg === "object" && msg !== null && (msg.to || msg.subject) && !msg.raw) {
+        const raw = buildRawEmail({
+          to: msg.to ?? "",
+          subject: msg.subject ?? "",
+          body: msg.body ?? msg.text ?? msg.content ?? "",
+          cc: msg.cc,
+          bcc: msg.bcc,
+        });
+        // drafts.create needs { message: { raw } }, messages.send needs { raw }
+        body = command.includes("drafts") ? { message: { raw } } : { raw };
+        if (!params?.userId) params = { ...(params || {}), userId: "me" };
+      }
+    }
+
     console.log("[GWS tool] called with:", { command, params, body, pageAll });
     try {
       // Split on spaces AND dots so both "spreadsheets values get" and "spreadsheets.values get" work
       const args = command.split(/[\s.]+/).filter(Boolean);
       const method = args[args.length - 1]?.toLowerCase();
-      if (params) args.push("--params", JSON.stringify(params));
+      if (params && Object.keys(params).length) args.push("--params", JSON.stringify(params));
       if (body) args.push("--json", JSON.stringify(body));
       if (pageAll) args.push("--page-all");
       args.push("--format", "json");

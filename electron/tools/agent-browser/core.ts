@@ -17,7 +17,7 @@ const localBin = path.resolve(
 );
 
 let bin = "";
-let cdpPort: number | null = null;
+let browserConnected = false;
 
 // ── Helpers ──
 
@@ -56,32 +56,27 @@ export async function resolveBin(): Promise<string> {
   );
 }
 
-// ── CDP Detection ──
+// ── Browser Detection ──
 
-export async function detectCdp(): Promise<number | null> {
-  const ports = [
-    process.env.BROWSER_CDP_PORT
-      ? parseInt(process.env.BROWSER_CDP_PORT, 10)
-      : null,
-    57450,
-  ].filter((p): p is number => p !== null);
-
-  for (const port of ports) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (res.ok) return port;
-    } catch {}
+export async function detectBrowser(): Promise<boolean> {
+  try {
+    const binary = await resolveBin();
+    const { stdout } = await execFile(
+      binary,
+      ["--auto-connect", "get", "cdp-url"],
+      { timeout: 10_000 },
+    );
+    return strip(stdout).startsWith("ws://");
+  } catch {
+    return false;
   }
-  return null;
 }
 
-export function getCdpPort() {
-  return cdpPort;
+export function isBrowserReady() {
+  return browserConnected;
 }
-export function setCdpPort(port: number | null) {
-  cdpPort = port;
+export function setBrowserReady(ready: boolean) {
+  browserConnected = ready;
 }
 
 // ── Command Execution ──
@@ -91,12 +86,10 @@ export async function runRaw(
   timeout = 30_000,
 ): Promise<string> {
   const binary = await resolveBin();
-  if (!cdpPort) cdpPort = await detectCdp();
-
-  const fullArgs = cdpPort ? ["--cdp", String(cdpPort), ...args] : args;
+  if (!browserConnected) browserConnected = await detectBrowser();
 
   try {
-    const { stdout } = await execFile(binary, fullArgs, {
+    const { stdout } = await execFile(binary, args, {
       timeout,
       env: { ...process.env, AGENT_BROWSER_DEBUG: "1" },
     });
@@ -111,7 +104,7 @@ export async function runRaw(
       errMsg.includes("Failed to connect") ||
       out.includes("Failed to connect")
     )
-      cdpPort = null;
+      browserConnected = false;
 
     throw new Error(
       out || errMsg || (err instanceof Error ? err.message : String(err)),
@@ -142,35 +135,33 @@ export function getChatActiveTab(): ReadonlyMap<string, string> {
   return chatActiveTab;
 }
 
-export async function fetchCdpTargets(): Promise<CdpTarget[]> {
-  if (!cdpPort) cdpPort = await detectCdp();
-  if (!cdpPort) return [];
+export async function listBrowserTabs(): Promise<CdpTarget[]> {
   try {
-    const res = await fetch(`http://127.0.0.1:${cdpPort}/json`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    return ((await res.json()) as CdpTarget[]).filter((t) => t.type === "page");
+    const raw = await runRaw(["tab", "list", "--json"]);
+    const parsed = JSON.parse(raw);
+    const tabs = parsed?.data?.tabs ?? parsed?.tabs ?? (Array.isArray(parsed) ? parsed : []);
+    return tabs.filter((t: any) => t.type === "page");
   } catch {
     return [];
   }
 }
 
-async function createCdpTab(url = "about:blank"): Promise<CdpTarget | null> {
+async function createBrowserTab(url = "about:blank"): Promise<CdpTarget | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${cdpPort}/json/new?${url}`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    return (await res.json()) as CdpTarget;
+    const args = ["tab", "new", "--json"];
+    if (url !== "about:blank") args.splice(2, 0, url);
+    const raw = await runRaw(args);
+    const parsed = JSON.parse(raw);
+    if (!parsed?.data) return null;
+    return { id: String(parsed.data.index), url: parsed.data.url ?? url, type: "page" };
   } catch {
     return null;
   }
 }
 
-async function closeCdpTargetTab(targetId: string): Promise<void> {
+async function closeBrowserTabByIndex(index: number): Promise<void> {
   try {
-    await fetch(`http://127.0.0.1:${cdpPort}/json/close/${targetId}`, {
-      signal: AbortSignal.timeout(2000),
-    });
+    await runRaw(["tab", "close", String(index)]);
   } catch {}
 }
 
@@ -202,10 +193,10 @@ export async function createTabForChat(
   chatId: string,
   url = "about:blank",
 ): Promise<CdpTarget | null> {
-  if (!cdpPort) cdpPort = await detectCdp();
-  if (!cdpPort) return null;
+  if (!browserConnected) browserConnected = await detectBrowser();
+  if (!browserConnected) return null;
 
-  const target = await createCdpTab(url);
+  const target = await createBrowserTab(url);
   if (!target) return null;
 
   const tabs = chatTabs.get(chatId) ?? [];
@@ -222,7 +213,7 @@ export async function createTabForChat(
 export async function getChatTabInfo(
   chatId: string,
 ): Promise<(CdpTarget & { active: boolean })[]> {
-  const targets = await fetchCdpTargets();
+  const targets = await listBrowserTabs();
   await pruneStaleTargets(chatId, targets);
 
   const tabs = chatTabs.get(chatId) ?? [];
@@ -242,10 +233,10 @@ export function setActiveChatTab(chatId: string, targetId: string): void {
 
 /** Ensure the chat has at least one browser tab and switch to the active one */
 async function ensureAndSwitchChat(chatId: string): Promise<void> {
-  if (!cdpPort) return;
+  if (!browserConnected) return;
 
   try {
-    const targets = await fetchCdpTargets();
+    const targets = await listBrowserTabs();
     await pruneStaleTargets(chatId, targets);
 
     let tabs = chatTabs.get(chatId) ?? [];
@@ -272,10 +263,10 @@ async function ensureAndSwitchChat(chatId: string): Promise<void> {
 }
 
 export async function run(args: string[], timeout = 30_000): Promise<string> {
-  if (!cdpPort) cdpPort = await detectCdp();
+  if (!browserConnected) browserConnected = await detectBrowser();
 
   const chatId = chatTabContext.getStore();
-  if (chatId && cdpPort && chatId !== lastSwitchedChat) {
+  if (chatId && browserConnected && chatId !== lastSwitchedChat) {
     await ensureAndSwitchChat(chatId);
     lastSwitchedChat = chatId;
   }
@@ -286,9 +277,9 @@ export async function run(args: string[], timeout = 30_000): Promise<string> {
 // ── Lifecycle Utilities ──
 
 export async function openUrlInTab(url: string): Promise<void> {
-  if (!cdpPort) cdpPort = await detectCdp();
+  if (!browserConnected) browserConnected = await detectBrowser();
 
-  if (cdpPort) {
+  if (browserConnected) {
     try {
       await run(["open", url]);
       console.log(`[Browser] opened ${url} in tab`);
@@ -332,8 +323,8 @@ export async function cleanupChatTabs(chatId: string): Promise<void> {
   chatActiveTab.delete(chatId);
   if (lastSwitchedChat === chatId) lastSwitchedChat = null;
 
-  if (cdpPort) {
-    for (const targetId of tabs) await closeCdpTargetTab(targetId);
+  if (browserConnected) {
+    for (const id of tabs) await closeBrowserTabByIndex(parseInt(id, 10));
   }
 }
 
@@ -342,9 +333,11 @@ export async function closeBrowserToolset(): Promise<void> {
     const binary = await resolveBin();
     await execFile(binary, ["close"], { timeout: 5000 });
   } catch {}
-  cdpPort = null;
+  browserConnected = false;
 }
 
 export async function isBrowserConnected(): Promise<boolean> {
-  return (await detectCdp()) !== null;
+  if (browserConnected) return true;
+  browserConnected = await detectBrowser();
+  return browserConnected;
 }
